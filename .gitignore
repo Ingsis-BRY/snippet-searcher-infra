@@ -1,4 +1,8 @@
 .env
+*.pem
+*.key
+*.crt
+certs/
 .gradle
 build/
 !gradle/wrapper/gradle-wrapper.jar
