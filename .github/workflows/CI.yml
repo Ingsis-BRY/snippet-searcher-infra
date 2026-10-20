@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, prod]
+
+  push:
+    branches: [dev]
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Validate deployment script
+        run: bash -n scripts/deploy.sh
+
+      - name: Validate Swarm configuration
+        run: docker compose -f swarm/compose.yml config -q
+        env:
+          SNIPPET_SERVICE_IMAGE: ghcr.io/ingsis-bry/snippet-service:latest
+          POSTGRES_DB: ${POSTGRES_DB}
+          POSTGRES_USER: ${POSTGRES_USER}
+          POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+          AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING}
