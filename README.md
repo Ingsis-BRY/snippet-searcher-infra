@@ -25,7 +25,7 @@ The initial Swarm stack includes the following services:
 
 | Service | Image | Purpose |
 |---|---|---|
-| `nginx` | `nginx:1.28-alpine` | Reverse proxy and public entry point |
+| `nginx` | `nginx:1.28-alpine` | Reverse proxy, TLS termination and public entry point |
 | `snippet-service` | `$SNIPPET_SERVICE_IMAGE` (e.g. `ghcr.io/ingsis-bry/snippet-service:<tag>`) | Spring Boot application |
 | `postgres` | `postgres:17` | Relational database |
 | `azurite` | `mcr.microsoft.com/azure-storage/azurite` | Local Azure Blob Storage emulator |
@@ -39,8 +39,10 @@ The application accesses its dependencies using their service names:
 - PostgreSQL: `postgres:5432`
 - Azurite Blob Storage: `azurite:10000`
 
-Nginx publishes port `80` through Docker Swarm's ingress routing mesh
-and forwards requests to `snippet-service:8080`. Its configuration lives
+Nginx publishes ports `80` and `443` through Docker Swarm's ingress
+routing mesh. Port `80` redirects every request to HTTPS, except
+`/nginx-health`. Port `443` terminates TLS and forwards requests to
+`snippet-service:8080`. Its configuration lives
 in `swarm/nginx/default.conf` and is delivered to the container as a
 Swarm config.
 
@@ -50,6 +52,27 @@ the file produces a new config and Nginx is redeployed with it.
 
 The application, PostgreSQL and Azurite do not expose published ports in
 the Swarm stack.
+
+### TLS
+
+The TLS certificate and private key are delivered to Nginx as Swarm
+secrets. They are read from files on the machine running
+`scripts/deploy.sh`:
+
+- `TLS_CERT_FILE`: certificate chain in PEM format.
+- `TLS_KEY_FILE`: private key in PEM format.
+
+The secret names include a hash of both files (`TLS_VERSION`), so
+replacing the certificate produces new secrets on the next deployment.
+
+Certificate and key files must never be committed to this repository.
+
+For local testing, a self-signed certificate can be generated with:
+
+```bash
+mkdir -p certs
+openssl req -x509 -nodes -newkey rsa:2048 -days 365     -subj "/CN=localhost"     -keyout certs/tls.key -out certs/tls.crt
+```
 
 ### Persistence
 
@@ -72,6 +95,9 @@ environment variables:
 - `POSTGRES_USER`
 - `POSTGRES_PASSWORD`
 - `AZURE_STORAGE_CONNECTION_STRING`
+
+Deployment also requires `SNIPPET_SERVICE_IMAGE`, `TLS_CERT_FILE` and
+`TLS_KEY_FILE`.
 
 Required variables must be provided when deploying the stack.
 
