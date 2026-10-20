@@ -25,7 +25,7 @@ The initial Swarm stack includes the following services:
 
 | Service | Image | Purpose |
 |---|---|---|
-| `snippet-service` | `ghcr.io/ingsis-bry/snippet-service:latest` | Spring Boot application |
+| `snippet-service` | `$SNIPPET_SERVICE_IMAGE` (e.g. `ghcr.io/ingsis-bry/snippet-service:<tag>`) | Spring Boot application |
 | `postgres` | `postgres:17` | Relational database |
 | `azurite` | `mcr.microsoft.com/azure-storage/azurite` | Local Azure Blob Storage emulator |
 
@@ -46,7 +46,8 @@ PostgreSQL and Azurite do not expose published ports in the Swarm stack.
 ### Persistence
 
 PostgreSQL and Azurite use named Docker volumes to preserve data beyond
-the lifecycle of individual containers.
+the lifecycle of individual containers. Both services are constrained
+to the manager node so they always run next to their volumes.
 
 These volumes are local to the node where they are created. Docker Swarm
 does not automatically replicate or migrate their data between nodes.
@@ -91,7 +92,7 @@ The `main` branch may remain from the repository's initial setup, but
 
 ### Continuous Integration
 
-The GitHub Actions workflow in `.github/workflows/ci.yml` validates
+The GitHub Actions workflow in `.github/workflows/CI.yml` validates
 infrastructure changes.
 
 It runs on:
@@ -124,12 +125,11 @@ will be configured after the Azure VMs and Swarm cluster are ready.
 .
 ├── .github/
 │   └── workflows/
-│       └── ci.yml
+│       └── CI.yml
 ├── swarm/
 │   └── compose.yml
 ├── scripts/
 │   └── deploy.sh
-├── docs/
-│   └── architecture.md
 ├── .gitignore
 └── README.md
+```

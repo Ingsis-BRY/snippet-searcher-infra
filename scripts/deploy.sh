@@ -3,7 +3,8 @@
 set -euo pipefail
 
 STACK_NAME="snippet-searcher"
-COMPOSE_FILE="swarm/compose.yml"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="$SCRIPT_DIR/../swarm/compose.yml"
 
 if [[ -z "${SNIPPET_SERVICE_IMAGE:-}" ]]; then
     echo "Error: SNIPPET_SERVICE_IMAGE is not set." >&2

@@ -27,7 +27,7 @@ jobs:
         run: docker compose -f swarm/compose.yml config -q
         env:
           SNIPPET_SERVICE_IMAGE: ghcr.io/ingsis-bry/snippet-service:latest
-          POSTGRES_DB: ${POSTGRES_DB}
-          POSTGRES_USER: ${POSTGRES_USER}
-          POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-          AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING}
+          POSTGRES_DB: ci-placeholder
+          POSTGRES_USER: ci-placeholder
+          POSTGRES_PASSWORD: ci-placeholder
+          AZURE_STORAGE_CONNECTION_STRING: ci-placeholder
