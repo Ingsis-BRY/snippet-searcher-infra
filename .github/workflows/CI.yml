@@ -23,11 +23,21 @@ jobs:
       - name: Validate deployment script
         run: bash -n scripts/deploy.sh
 
+      - name: Generate test TLS certificate
+        run: >
+          mkdir -p /tmp/tls &&
+          openssl req -x509 -nodes -newkey rsa:2048 -days 1
+          -subj "/CN=localhost"
+          -keyout /tmp/tls/tls_key -out /tmp/tls/tls_cert
+
       - name: Validate Swarm configuration
         run: docker compose -f swarm/compose.yml config -q
         env:
           SNIPPET_SERVICE_IMAGE: ghcr.io/ingsis-bry/snippet-service:latest
           NGINX_CONFIG_VERSION: ci-placeholder
+          TLS_VERSION: ci-placeholder
+          TLS_CERT_FILE: /tmp/tls/tls_cert
+          TLS_KEY_FILE: /tmp/tls/tls_key
           POSTGRES_DB: ci-placeholder
           POSTGRES_USER: ci-placeholder
           POSTGRES_PASSWORD: ci-placeholder
@@ -37,4 +47,5 @@ jobs:
         run: >
           docker run --rm
           -v "$PWD/swarm/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro"
+          -v /tmp/tls:/run/secrets:ro
           nginx:1.28-alpine nginx -t
