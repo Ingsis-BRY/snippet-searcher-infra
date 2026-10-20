@@ -25,6 +25,7 @@ The initial Swarm stack includes the following services:
 
 | Service | Image | Purpose |
 |---|---|---|
+| `nginx` | `nginx:1.28-alpine` | Reverse proxy and public entry point |
 | `snippet-service` | `$SNIPPET_SERVICE_IMAGE` (e.g. `ghcr.io/ingsis-bry/snippet-service:<tag>`) | Spring Boot application |
 | `postgres` | `postgres:17` | Relational database |
 | `azurite` | `mcr.microsoft.com/azure-storage/azurite` | Local Azure Blob Storage emulator |
@@ -38,10 +39,17 @@ The application accesses its dependencies using their service names:
 - PostgreSQL: `postgres:5432`
 - Azurite Blob Storage: `azurite:10000`
 
-The application publishes port `8080` through Docker Swarm's ingress
-routing mesh.
+Nginx publishes port `80` through Docker Swarm's ingress routing mesh
+and forwards requests to `snippet-service:8080`. Its configuration lives
+in `swarm/nginx/default.conf` and is delivered to the container as a
+Swarm config.
 
-PostgreSQL and Azurite do not expose published ports in the Swarm stack.
+Swarm configs are immutable, so the config name includes a hash of the
+file (`NGINX_CONFIG_VERSION`), computed by `scripts/deploy.sh`. Changing
+the file produces a new config and Nginx is redeployed with it.
+
+The application, PostgreSQL and Azurite do not expose published ports in
+the Swarm stack.
 
 ### Persistence
 
@@ -101,8 +109,9 @@ It runs on:
 - Pushes to `dev`.
 - Manual workflow dispatch.
 
-The workflow checks the Bash syntax of `scripts/deploy.sh` and validates
-the Swarm Compose configuration using Docker Compose.
+The workflow checks the Bash syntax of `scripts/deploy.sh`, validates
+the Swarm Compose configuration using Docker Compose, and validates the
+Nginx configuration with `nginx -t`.
 
 This validation does not deploy services or verify connectivity between
 the application and its dependencies.
@@ -127,6 +136,8 @@ will be configured after the Azure VMs and Swarm cluster are ready.
 │   └── workflows/
 │       └── CI.yml
 ├── swarm/
+│   ├── nginx/
+│   │   └── default.conf
 │   └── compose.yml
 ├── scripts/
 │   └── deploy.sh
