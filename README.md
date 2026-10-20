@@ -76,6 +76,57 @@ openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
     -keyout certs/tls.key -out certs/tls.crt
 ```
 
+### Let's Encrypt
+
+Trusted certificates are issued by Let's Encrypt using Certbot on the
+manager node and the HTTP-01 webroot challenge. Nginx serves
+`/.well-known/acme-challenge/` on port `80` from `/var/www/certbot`,
+a directory on the manager that is bind-mounted into the container.
+Nginx is constrained to the manager node for this reason.
+
+Prerequisites:
+
+- A DuckDNS subdomain (`<name>.duckdns.org`) whose IP points to the
+  manager VM's public IP. The Azure public IP must be static; if it
+  changes, update it on duckdns.org.
+- Ports `80` and `443` open in the VM's network security group.
+- Certbot installed on the manager: `sudo snap install --classic certbot`.
+
+The webroot challenge does not use the DuckDNS API, so no DuckDNS token
+is required.
+
+First-time setup on the manager:
+
+1. Create the webroot: `sudo mkdir -p /var/www/certbot`.
+2. Deploy the stack with a self-signed certificate (see above).
+3. Request the certificate and install the renewal hook:
+
+   ```bash
+   sudo DOMAIN=<name>.duckdns.org CERTBOT_EMAIL=<email> scripts/certbot-init.sh
+   ```
+
+   Set `CERTBOT_STAGING=1` to test against the Let's Encrypt staging
+   environment first. Before requesting the real certificate, remove the
+   staging one with `sudo certbot delete --cert-name <name>.duckdns.org`.
+
+`scripts/certbot-init.sh` issues the certificate, installs
+`scripts/certbot-deploy-hook.sh` as a Certbot deploy hook, switches Nginx
+to the new certificate and runs `certbot renew --dry-run`.
+
+Renewal is automatic. The Certbot snap runs `certbot renew` twice a day,
+and after each successful renewal the deploy hook creates new TLS
+secrets and updates only the Nginx service, so renewal does not require
+the application's credentials.
+
+Later full deployments must use the Let's Encrypt files and run as root,
+since `/etc/letsencrypt` is only readable by root:
+
+```bash
+sudo -E TLS_CERT_FILE=/etc/letsencrypt/live/<name>.duckdns.org/fullchain.pem \
+    TLS_KEY_FILE=/etc/letsencrypt/live/<name>.duckdns.org/privkey.pem \
+    scripts/deploy.sh
+```
+
 ### Persistence
 
 PostgreSQL and Azurite use named Docker volumes to preserve data beyond
@@ -137,9 +188,9 @@ It runs on:
 - Pushes to `dev`.
 - Manual workflow dispatch.
 
-The workflow checks the Bash syntax of `scripts/deploy.sh`, validates
-the Swarm Compose configuration using Docker Compose, and validates the
-Nginx configuration with `nginx -t`.
+The workflow checks the Bash syntax of the scripts in `scripts/`, lints
+them with ShellCheck, validates the Swarm Compose configuration using
+Docker Compose, and validates the Nginx configuration with `nginx -t`.
 
 This validation does not deploy services or verify connectivity between
 the application and its dependencies.
@@ -168,6 +219,8 @@ will be configured after the Azure VMs and Swarm cluster are ready.
 │   │   └── default.conf
 │   └── compose.yml
 ├── scripts/
+│   ├── certbot-deploy-hook.sh
+│   ├── certbot-init.sh
 │   └── deploy.sh
 ├── .gitignore
 └── README.md
