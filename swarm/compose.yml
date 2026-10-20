@@ -1,6 +1,6 @@
 services:
   snippet-service:
-    image: ghcr.io/ingsis-bry/snippet-service:latest
+    image: "${SNIPPET_SERVICE_IMAGE:?SNIPPET_SERVICE_IMAGE must be set}"
     ports:
       - target: 8080
         published: 8080
@@ -30,6 +30,9 @@ services:
       - snippet-network
     deploy:
       replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
       restart_policy:
         condition: on-failure
 
@@ -47,6 +50,9 @@ services:
       - snippet-network
     deploy:
       replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
       restart_policy:
         condition: on-failure
 
