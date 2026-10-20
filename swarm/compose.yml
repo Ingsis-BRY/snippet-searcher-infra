@@ -1,0 +1,59 @@
+services:
+  snippet-service:
+    image: ghcr.io/ingsis-bry/snippet-service:latest
+    ports:
+      - target: 8080
+        published: 8080
+        protocol: tcp
+        mode: ingress
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:?POSTGRES_DB must be set}"
+      POSTGRES_USER: "${POSTGRES_USER:?POSTGRES_USER must be set}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
+      AZURE_STORAGE_CONNECTION_STRING: "${AZURE_STORAGE_CONNECTION_STRING:?AZURE_STORAGE_CONNECTION_STRING must be set}"
+    networks:
+      - snippet-network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:?POSTGRES_DB must be set}"
+      POSTGRES_USER: "${POSTGRES_USER:?POSTGRES_USER must be set}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - snippet-network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    command:
+      - azurite-blob
+      - --blobHost
+      - 0.0.0.0
+      - --location
+      - /workspace
+    volumes:
+      - azurite-data:/workspace
+    networks:
+      - snippet-network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+networks:
+  snippet-network:
+    driver: overlay
+
+volumes:
+  postgres-data:
+  azurite-data:
