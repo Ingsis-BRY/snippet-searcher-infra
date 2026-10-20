@@ -71,7 +71,9 @@ For local testing, a self-signed certificate can be generated with:
 
 ```bash
 mkdir -p certs
-openssl req -x509 -nodes -newkey rsa:2048 -days 365     -subj "/CN=localhost"     -keyout certs/tls.key -out certs/tls.crt
+openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
+    -subj "/CN=localhost" \
+    -keyout certs/tls.key -out certs/tls.crt
 ```
 
 ### Persistence
