@@ -20,8 +20,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Validate deployment script
-        run: bash -n scripts/deploy.sh
+      - name: Validate script syntax
+        run: for script in scripts/*.sh; do bash -n "$script"; done
+
+      - name: Lint scripts
+        run: docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:v0.10.0 scripts/*.sh
 
       - name: Generate test TLS certificate
         run: >
