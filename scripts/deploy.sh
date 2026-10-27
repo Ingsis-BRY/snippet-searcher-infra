@@ -7,10 +7,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/../swarm/compose.yml"
 NGINX_CONFIG_FILE="$SCRIPT_DIR/../swarm/nginx/default.conf"
 
-if [[ -z "${SNIPPET_SERVICE_IMAGE:-}" ]]; then
-    echo "Error: SNIPPET_SERVICE_IMAGE is not set." >&2
-    exit 1
-fi
+for var in SNIPPET_SERVICE_IMAGE PERMISSION_SERVICE_IMAGE; do
+    if [[ -z "${!var:-}" ]]; then
+        echo "Error: $var is not set." >&2
+        exit 1
+    fi
+done
 
 for var in TLS_CERT_FILE TLS_KEY_FILE; do
     if [[ -z "${!var:-}" || ! -f "${!var}" ]]; then

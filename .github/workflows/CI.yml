@@ -45,6 +45,10 @@ jobs:
           POSTGRES_USER: ci-placeholder
           POSTGRES_PASSWORD: ci-placeholder
           AZURE_STORAGE_CONNECTION_STRING: ci-placeholder
+          PERMISSION_SERVICE_IMAGE: ghcr.io/ingsis-bry/snippet-permission-service:latest
+          PERMISSION_POSTGRES_DB: ci-placeholder
+          PERMISSION_POSTGRES_USER: ci-placeholder
+          PERMISSION_POSTGRES_PASSWORD: ci-placeholder
 
       - name: Validate Nginx configuration
         run: >
