@@ -66,6 +66,43 @@ services:
       restart_policy:
         condition: on-failure
 
+  snippet-permission-service:
+    image: "${PERMISSION_SERVICE_IMAGE:?PERMISSION_SERVICE_IMAGE must be set}"
+    ports:
+      - target: 8080
+        published: 8081
+        protocol: tcp
+        mode: ingress
+    environment:
+      DB_HOST: snippet-permission-db
+      POSTGRES_DB: "${PERMISSION_POSTGRES_DB:?PERMISSION_POSTGRES_DB must be set}"
+      POSTGRES_USER: "${PERMISSION_POSTGRES_USER:?PERMISSION_POSTGRES_USER must be set}"
+      POSTGRES_PASSWORD: "${PERMISSION_POSTGRES_PASSWORD:?PERMISSION_POSTGRES_PASSWORD must be set}"
+    networks:
+      - snippet-network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  snippet-permission-db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: "${PERMISSION_POSTGRES_DB:?PERMISSION_POSTGRES_DB must be set}"
+      POSTGRES_USER: "${PERMISSION_POSTGRES_USER:?PERMISSION_POSTGRES_USER must be set}"
+      POSTGRES_PASSWORD: "${PERMISSION_POSTGRES_PASSWORD:?PERMISSION_POSTGRES_PASSWORD must be set}"
+    volumes:
+      - snippet-permission-db-data:/var/lib/postgresql/data
+    networks:
+      - snippet-network
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite
     command:
@@ -106,3 +143,4 @@ networks:
 volumes:
   postgres-data:
   azurite-data:
+  snippet-permission-db-data:
