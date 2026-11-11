@@ -77,11 +77,6 @@ services:
 
   snippet-permission-service:
     image: "${PERMISSION_SERVICE_IMAGE:?PERMISSION_SERVICE_IMAGE must be set}"
-    ports:
-      - target: 8080
-        published: 8081
-        protocol: tcp
-        mode: ingress
     environment:
       DB_HOST: snippet-permission-db
       POSTGRES_DB: "${PERMISSION_POSTGRES_DB:?PERMISSION_POSTGRES_DB must be set}"

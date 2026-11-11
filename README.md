@@ -63,10 +63,9 @@ Swarm configs are immutable, so the config name includes a hash of the
 file (`NGINX_CONFIG_VERSION`), computed by `scripts/deploy.sh`. Changing
 the file produces a new config and Nginx is redeployed with it.
 
-`snippet-permission-service` publishes port `8081` through the ingress
-routing mesh, mapped to its container port `8080`, until it is routed
-through Nginx. The other services do not expose published ports in the
-Swarm stack.
+- Only Nginx publishes ports in the Swarm stack. 
+- The other services, including `snippet-permission-service`, are reachable only inside the
+`snippet-network` overlay network.
 
 ### TLS
 
