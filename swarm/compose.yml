@@ -48,6 +48,15 @@ services:
       restart_policy:
         condition: on-failure
 
+  printscript-ui:
+    image: "${PRINTSCRIPT_UI_IMAGE:?PRINTSCRIPT_UI_IMAGE must be set}"
+    networks:
+      - snippet-network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
   postgres:
     image: postgres:17
     environment:

@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/../swarm/compose.yml"
 NGINX_CONFIG_FILE="$SCRIPT_DIR/../swarm/nginx/default.conf"
 
-for var in SNIPPET_SERVICE_IMAGE PERMISSION_SERVICE_IMAGE; do
+for var in SNIPPET_SERVICE_IMAGE PERMISSION_SERVICE_IMAGE PRINTSCRIPT_UI_IMAGE; do
     if [[ -z "${!var:-}" ]]; then
         echo "Error: $var is not set." >&2
         exit 1

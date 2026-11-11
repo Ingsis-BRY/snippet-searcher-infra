@@ -27,6 +27,7 @@ The initial Swarm stack includes the following services:
 |---|---|---|
 | `nginx` | `nginx:1.28-alpine` | Reverse proxy, TLS termination and public entry point |
 | `snippet-service` | `$SNIPPET_SERVICE_IMAGE` (e.g. `ghcr.io/ingsis-bry/snippet-service:<tag>`) | Spring Boot application |
+| `printscript-ui` | `$PRINTSCRIPT_UI_IMAGE` (e.g. `ghcr.io/ingsis-bry/printscript-ui:<tag>`) | React/Vite frontend served by its own Nginx |
 | `postgres` | `postgres:17` | Relational database |
 | `snippet-permission-service` | `$PERMISSION_SERVICE_IMAGE` (e.g. `ghcr.io/ingsis-bry/snippet-permission-service:<tag>`) | Snippet permissions |
 | `snippet-permission-db` | `postgres:17` | Permission database |
@@ -45,9 +46,17 @@ The application accesses its dependencies using their service names:
 
 Nginx publishes ports `80` and `443` through Docker Swarm's ingress
 routing mesh. Port `80` redirects every request to HTTPS, except
-`/nginx-health`. Port `443` terminates TLS and forwards requests to
-`snippet-service:8080`. Its configuration lives
-in `swarm/nginx/default.conf` and is delivered to the container as a
+`/nginx-health`. Port `443` terminates TLS and routes requests:
+
+- `/api/*` to `snippet-service:8080`, with the `/api` prefix removed.
+- everything else to `printscript-ui:80`.
+
+The UI is a static build: 
+- `VITE_API_BASE_URL`, `VITE_AUTH0_DOMAIN` and`VITE_AUTH0_CLIENT_ID` are baked into its image at build time
+- `VITE_API_BASE_URL` must be `https://<domain>/api`. 
+- The `printscript-ui`service has no published ports.
+
+Nginx configuration lives in `swarm/nginx/default.conf` and is delivered to the container as a
 Swarm config.
 
 Swarm configs are immutable, so the config name includes a hash of the
@@ -164,7 +173,7 @@ to the containers as `POSTGRES_DB`, `POSTGRES_USER` and
 - `PERMISSION_POSTGRES_PASSWORD`
 
 Deployment also requires `SNIPPET_SERVICE_IMAGE`,
-`PERMISSION_SERVICE_IMAGE`, `TLS_CERT_FILE` and `TLS_KEY_FILE`.
+`PERMISSION_SERVICE_IMAGE`, `PRINTSCRIPT_UI_IMAGE`, `TLS_CERT_FILE` and `TLS_KEY_FILE`.
 
 Required variables must be provided when deploying the stack.
 
@@ -215,7 +224,7 @@ Deployment is initially performed using the script:
 
 `scripts/deploy.sh`
 
-The script checks that both image references are provided and that Docker
+The script checks that the three image references are provided and that Docker
 Swarm is active before executing `docker stack deploy`.
 
 Automated deployments to the development and production environments
