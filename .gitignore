@@ -53,3 +53,16 @@ bin/
 
 ### Local scratch files ###
 test.txt
+
+### Local environment files ###
+*.env
+!*.env.example
+*.env.*
+!*.env.example
+
+### SSH keys and Azure local config ###
+id_rsa*
+id_ed25519*
+id_ecdsa*
+!*.pub
+.azure/

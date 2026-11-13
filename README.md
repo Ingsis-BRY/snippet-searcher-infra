@@ -19,6 +19,9 @@ while worker nodes execute assigned tasks.
 
 The manager may also run application containers.
 
+To create a VM step by step with the Azure CLI, see
+[`docs/azure-vm-setup.md`](docs/azure-vm-setup.md).
+
 ## Services
 
 The initial Swarm stack includes the following services:
