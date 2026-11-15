@@ -10,14 +10,14 @@ Repeat the guide once per environment (`dev` and `prod`).
 
 ## 0. Decisions
 
-| Item | Value | Notes |
-|---|---|---|
-| OS | Ubuntu Server 22.04 LTS | |
-| Size | `Standard_B2s` (2 vCPU, 4 GB RAM) | The stack runs 7 containers (two Spring apps, two Postgres, Azurite, two Nginx). `Standard_B1s` (1 GB) is too small. |
-| Disk | 30 GB Standard SSD | Volumes (Postgres, Azurite) live here. |
-| Swarm | Single manager | No workers needed. |
-| Open ports | 22, 80, 443 | Never expose Docker's 2375/2376. |
-| Auth | SSH key only | No passwords. |
+| Item | Value                                   | Notes                                                                                                                               |
+|---|-----------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------|
+| OS | Ubuntu Server 22.04 LTS                 |                                                                                                                                     |
+| Size | `Standard_B2als_v2` (2 vCPU, 4 GiB RAM) | Runs 7 services: two Spring applications, two PostgreSQL databases, Azurite, PrintScript UI and Nginx. |
+| Disk | 30 GB Standard SSD                      | Volumes (Postgres, Azurite) live here.                                                                                              |
+| Swarm | Single manager                          | No workers needed.                                                                                                                  |
+| Open ports | 22, 80, 443                             | Never expose Docker's 2375/2376.                                                                                                    |
+| Auth | SSH key only                            | No passwords.                                                                                                                       |
 
 > **Azure for Students:** some sizes/regions are blocked for your
 > subscription. If `az vm create` fails with `SkuNotAvailable` or a quota
@@ -25,30 +25,86 @@ Repeat the guide once per environment (`dev` and `prod`).
 
 ## 1. Prerequisites (on your own machine)
 
-1. Install the Azure CLI:
-- For linux use: <https://learn.microsoft.com/cli/azure/install-azure-cli-linux>
-- For windows use: <https://learn.microsoft.com/cli/azure/install-azure-cli-windows>
+### 1.1 Install Azure CLI
 
-2. Log in and pick the subscription:
+- Linux: https://learn.microsoft.com/cli/azure/install-azure-cli-linux
+- Windows: https://learn.microsoft.com/cli/azure/install-azure-cli-windows
 
-   ```bash
-   az login
-   az account list --output table
-   az account set --subscription "<SUBSCRIPTION_NAME_OR_ID>"
-   ```
+### 1.2 Log in and select your subscription
 
-3. Have an SSH key (create one if `ls <path-to-your-public-key.pub>` fails):
+```bash
+az login
 
-   ```bash
-   ssh-keygen -t ed25519 -C "<comment>" -f <path-to-new-key>
-   ```
+az account list --output table
 
-   Only the **public** key (`.pub`) goes to Azure. Never share the private key.
+az account set --subscription "<SUBSCRIPTION_NAME_OR_ID>"
+```
+
+### 1.3 Prepare an SSH key pair
+
+Azure VM access uses SSH public-key authentication.
+
+First, check if you already have an SSH key pair:
+
+```bash
+ls -la ~/.ssh/
+```
+
+Look for a matching private/public key pair, for example:
+
+```text
+id_ed25519
+id_ed25519.pub
+```
+
+- If you already have a suitable key pair, you can reuse it like this: 
+```bash
+SSH_KEY="$HOME/.ssh/id_ed25519.pub"
+```
+- if you have a private key but its public key file is missing, regenerate it:
+```bash
+  ssh-keygen -y -f ~/.ssh/<PRIVATE_KEY_FILE> > ~/.ssh/<PRIVATE_KEY_FILE>.pub
+```
+Set SSH_KEY in azure-vm.env to the path of the public key.
+
+- Otherwise, generate a dedicated key pair for this project:
+
+```bash
+ssh-keygen -t ed25519 \
+  -C "snippet-searcher-azure" \
+  -f ~/.ssh/snippet-searcher-azure
+```
+
+You will be asked to enter a passphrase.
+
+- A passphrase provides additional protection if the private key is compromised.
+- You can leave it empty for a simpler setup, although using a passphrase is recommended.
+
+The command generates two files:
+
+| File | Purpose | Handling |
+|---|---|---|
+| `snippet-searcher-azure` | Private key | Keep it secret. Never upload it to Azure or commit it to Git. |
+| `snippet-searcher-azure.pub` | Public key | This is the file supplied to Azure when creating the VM. |
+
+Verify that both files exist:
+
+```bash
+ls -l ~/.ssh/snippet-searcher-azure*
+```
+
+The public key will be referenced in `azure-vm.env`:
+
+```bash
+SSH_KEY="$HOME/.ssh/snippet-searcher-azure.pub"
+```
+
+**Important:** Azure receives only the public key. The private key remains on your machine and is used when connecting to the VM.
 
 ## 2. Check what you are allowed to create
 
 ```bash
-az vm list-skus --location eastus --size Standard_B2 --output table
+az vm list-skus --location chilecentral --size Standard_B2als_v2 --output table
 ```
 
 If a size shows `NotAvailableForSubscription` under *Restrictions*, pick
@@ -173,7 +229,7 @@ Write it down. You will use it for DuckDNS and SSH.
 ### 4.8 Verify
 
 ```bash
-ssh $ADMIN_USER@$VM_IP
+ssh -i "${SSH_KEY%.pub}" "$ADMIN_USER@$VM_IP"
 ```
 
 You should get an Ubuntu shell. (Answer `yes` to the host fingerprint
@@ -244,25 +300,92 @@ Clone this repository on the VM (needed by `certbot-init.sh` and the
 renewal hook):
 
 ```bash
-git clone <URL-OF-THIS-REPOSITORY>
-cd snippet-infra
+git clone https://github.com/Ingsis-BRY/snippet-searcher-infra.git
+cd snippet-searcher-infra
+```
+### 8.1 TLS certificates and private keys
+
+The application is exposed through Nginx using HTTPS.
+
+TLS certificates are issued and renewed by Let's Encrypt using Certbot.
+
+The certificate files are stored on the VM:
+
+```text
+/etc/letsencrypt/
+└── live/
+    └── <DOMAIN>/
+        ├── fullchain.pem
+        └── privkey.pem
+```
+
+- `fullchain.pem`: certificate chain presented by Nginx.
+- `privkey.pem`: private key used for TLS. This file must remain secret.
+
+These files must never be committed to GitHub or copied into the application repository.
+
+The Nginx service does not mount the private key directly from the host. Instead, the deployment process creates Docker Swarm secrets from the certificate files:
+
+```text
+Host filesystem
+    |
+    v
+/etc/letsencrypt/live/<DOMAIN>/
+    |
+    v
+Docker Swarm secrets
+    |
+    v
+Nginx container
+    |
+    v
+/run/secrets/tls_cert
+/run/secrets/tls_key
+```
+
+A Certbot renewal deploy hook updates the corresponding Docker Swarm secrets
+and refreshes the Nginx service whenever the certificate is renewed.
+
+The certificate files are managed by Certbot under `/etc/letsencrypt/`.
+Do not manually copy them into the application or infrastructure repositories.
+
+### 8.2 Runtime environment variables
+
+The deployment script requires environment variables containing database
+credentials, storage configuration, image names and TLS certificate paths.
+
+Keep these variables in a file outside the Git repository:
+
+```bash
+nano "$HOME/snippet-searcher.env"
+```
+Restrict access to the file:
+```bash
+chmod 600 "$HOME/snippet-searcher.env"
 ```
 
 ## 9. Log in to GitHub Container Registry (inside the VM)
 
-Images are pulled from GHCR. Create a GitHub personal access token with
-only the `read:packages` scope, then:
+The Docker images are hosted on GitHub Container Registry (GHCR).
+
+Create a GitHub Personal Access Token (classic) with the minimum required permission:
+
+- `read:packages`
+
+Then authenticate Docker from the VM:
 
 ```bash
-echo "<TOKEN>" | docker login ghcr.io -u <GITHUB_USER> --password-stdin
+echo "<TOKEN>" | docker login ghcr.io -u <GITHUB_USERNAME> --password-stdin
 ```
 
-`scripts/deploy.sh` uses `--with-registry-auth`, so Swarm reuses this login.
+The login credentials are stored by Docker on the VM and allow it to pull private images.
+
+`scripts/deploy.sh` uses `--with-registry-auth` to forward registry authentication to Swarm when deploying services.
 
 ## 10. Manage the VM remotely with Docker Context (on your machine)
 
-This lets you run `docker` commands against the VM over SSH, without
-exposing the Docker API:
+This lets you run `docker` commands against the VM over SSH without exposing
+Docker's TCP API (ports 2375/2376) to the network.
 
 ```bash
 docker context create snippet-$ENV --docker "host=ssh://$ADMIN_USER@$VM_IP"
@@ -272,19 +395,38 @@ docker context use snippet-$ENV            # make it the default (docker context
 
 ## 11. Next steps
 
-1. Deploy the stack and issue the certificate: follow *Let's Encrypt* in
-   [`README.md`](../README.md).
-2. GitHub Actions deploy: store the SSH **private** key as a GitHub secret,
-   create the Docker context in the workflow with the same
-   `ssh://<ADMIN_USER>@<VM_IP>` host, and run `scripts/deploy.sh`.
+1. Configure the runtime environment variables (section 8.2).
+2. Issue the TLS certificate by following the Let's Encrypt instructions in
+   [the main README](../README.md).
+3. Authenticate Docker with GHCR (section 9).
+4. Load the runtime environment variables and deploy the stack:
+
+```bash
+set -a
+source "$HOME/snippet-searcher.env"
+set +a
+
+sudo -E ./scripts/deploy.sh
+```
+Verify that all services are running:
+```bash
+docker stack services snippet-searcher
+```
+All services should report 1/1 replicas.
 
 ## Security notes
 
-- Never commit private keys, tokens, `azure-vm.env` or Azure IDs.
+- Never commit private keys, tokens, `azure-vm.env` or `snippet-searcher.env`.
+- Keep `snippet-searcher.env` outside the repository with `600` permissions.
+- Never commit TLS private keys or copy them into application repositories.
 - The GHCR token needs only `read:packages`; store it in a password manager.
 - Password login is disabled; SSH is key-only and limited to one IP.
-- Optional hardening inside the VM: `sudo apt-get install -y fail2ban
-  unattended-upgrades`.
+- Only trusted users should belong to the `docker` group, since Docker access
+  effectively grants root-level privileges.
+- Docker named volumes persist data across container recreation and VM reboots,
+  but they do not protect against VM disk loss. Keep backups outside the VM.
+- Optional hardening inside the VM:
+  `sudo apt-get install -y fail2ban unattended-upgrades`.
 
 ## Useful commands
 
