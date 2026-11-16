@@ -174,8 +174,29 @@ to the containers as `POSTGRES_DB`, `POSTGRES_USER` and
 - `PERMISSION_POSTGRES_USER`
 - `PERMISSION_POSTGRES_PASSWORD`
 
+Both services validate Auth0 access tokens and need:
+
+- `AUTH0_DOMAIN`: tenant domain, `snippet-searcher-bry.us.auth0.com`
+- `AUTH0_AUDIENCE`: identifier of the Auth0 API, `https://snippet-searcher-api`
+
+`snippet-service` also searches users in the Auth0 Management API with
+the machine-to-machine application `Snippet Searcher Backend`
+(`read:users`):
+
+- `AUTH0_M2M_CLIENT_ID`
+- `AUTH0_M2M_CLIENT_SECRET` (secret)
+
+Both services also need `NEW_RELIC_LICENSE_KEY` (secret).
+
 Deployment also requires `SNIPPET_SERVICE_IMAGE`,
 `PERMISSION_SERVICE_IMAGE`, `PRINTSCRIPT_UI_IMAGE`, `TLS_CERT_FILE` and `TLS_KEY_FILE`.
+
+The UI is a static build, so its Auth0 settings (`VITE_AUTH0_DOMAIN`,
+`VITE_AUTH0_CLIENT_ID`, `VITE_AUTH0_AUDIENCE`) and `VITE_API_BASE_URL` are
+set when its image is built, not here. The public URL of each environment
+(`https://<domain>`) must be added to the Allowed Callback URLs, Allowed
+Logout URLs and Allowed Web Origins of the `Snippet Searcher UI`
+application in Auth0.
 
 Required variables must be provided when deploying the stack.
 
