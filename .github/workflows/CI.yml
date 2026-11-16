@@ -50,6 +50,11 @@ jobs:
           PERMISSION_POSTGRES_DB: ci-placeholder
           PERMISSION_POSTGRES_USER: ci-placeholder
           PERMISSION_POSTGRES_PASSWORD: ci-placeholder
+          NEW_RELIC_LICENSE_KEY: ci-placeholder
+          AUTH0_DOMAIN: ci-placeholder.auth0.com
+          AUTH0_AUDIENCE: https://snippet-searcher-api
+          AUTH0_M2M_CLIENT_ID: ci-placeholder
+          AUTH0_M2M_CLIENT_SECRET: ci-placeholder
 
       - name: Validate Nginx configuration
         run: >
