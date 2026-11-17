@@ -6,8 +6,9 @@ STACK_NAME="snippet-searcher"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/../swarm/compose.yml"
 NGINX_CONFIG_FILE="$SCRIPT_DIR/../swarm/nginx/default.conf"
+ENGINE_PROXY_CONFIG_FILE="$SCRIPT_DIR/../swarm/nginx/engine-proxy.conf"
 
-for var in SNIPPET_SERVICE_IMAGE PERMISSION_SERVICE_IMAGE PRINTSCRIPT_UI_IMAGE; do
+for var in SNIPPET_SERVICE_IMAGE PERMISSION_SERVICE_IMAGE PRINTSCRIPT_UI_IMAGE PRINTSCRIPT_ENGINE_IMAGE; do
     if [[ -z "${!var:-}" ]]; then
         echo "Error: $var is not set." >&2
         exit 1
@@ -28,6 +29,9 @@ fi
 
 NGINX_CONFIG_VERSION="$(sha256sum "$NGINX_CONFIG_FILE" | cut -c1-12)"
 export NGINX_CONFIG_VERSION
+
+ENGINE_PROXY_CONFIG_VERSION="$(sha256sum "$ENGINE_PROXY_CONFIG_FILE" | cut -c1-12)"
+export ENGINE_PROXY_CONFIG_VERSION
 
 TLS_CERT_FILE="$(realpath "$TLS_CERT_FILE")"
 TLS_KEY_FILE="$(realpath "$TLS_KEY_FILE")"
