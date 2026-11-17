@@ -31,7 +31,7 @@ The initial Swarm stack includes the following services:
 | `nginx` | `nginx:1.28-alpine` | Reverse proxy, TLS termination and public entry point |
 | `snippet-service` | `$SNIPPET_SERVICE_IMAGE` (e.g. `ghcr.io/ingsis-bry/snippet-service:<tag>`) | Spring Boot application |
 | `printscript-ui` | `$PRINTSCRIPT_UI_IMAGE` (e.g. `ghcr.io/ingsis-bry/printscript-ui:<tag>`) | React/Vite frontend served by its own Nginx |
-| `postgres` | `postgres:17` | Relational database |
+| `snippet-service-db` | `postgres:17` | Snippet service database |
 | `snippet-permission-service` | `$PERMISSION_SERVICE_IMAGE` (e.g. `ghcr.io/ingsis-bry/snippet-permission-service:<tag>`) | Snippet permissions |
 | `snippet-permission-db` | `postgres:17` | Permission database |
 | `azurite` | `mcr.microsoft.com/azure-storage/azurite` | Local Azure Blob Storage emulator |
@@ -42,7 +42,7 @@ Services communicate through the `snippet-network` overlay network.
 
 The application accesses its dependencies using their service names:
 
-- PostgreSQL: `postgres:5432`
+- Snippet service database: `snippet-service-db:5432`
 - Azurite Blob Storage: `azurite:10000`
 - Permission service: `snippet-permission-service:8080`
 - Permission database: `snippet-permission-db:5432`
@@ -146,7 +146,7 @@ sudo -E TLS_CERT_FILE=/etc/letsencrypt/live/<name>.duckdns.org/fullchain.pem \
 
 ### Persistence
 
-PostgreSQL, the permission database and Azurite use named Docker volumes
+The snippet service database, the permission database and Azurite use named Docker volumes
 to preserve data beyond the lifecycle of individual containers. They are
 constrained to the manager node so they always run next to their volumes.
 
@@ -158,21 +158,32 @@ the infrastructure is treated as production-ready.
 
 ### Configuration and Secrets
 
-The application receives its database and storage configuration through
-environment variables:
+`snippet-service` and its database (`snippet-service-db`) receive their
+database settings from the following variables, passed to the containers
+as `POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD`:
 
-- `POSTGRES_DB`
-- `POSTGRES_USER`
-- `POSTGRES_PASSWORD`
-- `AZURE_STORAGE_CONNECTION_STRING`
+- `SERVICE_POSTGRES_DB`
+- `SERVICE_POSTGRES_USER`
+- `SERVICE_POSTGRES_PASSWORD`
 
 The permission service and its database use their own variables, passed
-to the containers as `POSTGRES_DB`, `POSTGRES_USER` and
-`POSTGRES_PASSWORD`:
+to the containers the same way:
 
 - `PERMISSION_POSTGRES_DB`
 - `PERMISSION_POSTGRES_USER`
 - `PERMISSION_POSTGRES_PASSWORD`
+
+`snippet-service` stores snippet content in Azure Blob Storage through
+`AZURE_STORAGE_CONNECTION_STRING`. With the in-stack Azurite emulator it
+must point to the `azurite` service:
+
+```text
+DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;
+```
+
+`devstoreaccount1` and its key are Azurite's public, well-known emulator
+defaults, not a real credential. A real Azure Storage account needs its
+own connection string, which is a secret.
 
 Both services validate Auth0 access tokens and need:
 
@@ -190,6 +201,42 @@ Both services also need `NEW_RELIC_LICENSE_KEY` (secret).
 
 Deployment also requires `SNIPPET_SERVICE_IMAGE`,
 `PERMISSION_SERVICE_IMAGE`, `PRINTSCRIPT_UI_IMAGE`, `TLS_CERT_FILE` and `TLS_KEY_FILE`.
+
+#### Stack variables reference
+
+`swarm/compose.yml` fails to render if any of these variables is missing.
+
+| Variable | Used by | Description |
+|---|---|---|
+| `SNIPPET_SERVICE_IMAGE` | `snippet-service` | Image reference, e.g. `ghcr.io/ingsis-bry/snippet-service:<tag>` |
+| `PERMISSION_SERVICE_IMAGE` | `snippet-permission-service` | Image reference, e.g. `ghcr.io/ingsis-bry/snippet-permission-service:<tag>` |
+| `PRINTSCRIPT_UI_IMAGE` | `printscript-ui` | Image reference, e.g. `ghcr.io/ingsis-bry/printscript-ui:<tag>` |
+| `SERVICE_POSTGRES_DB` | `snippet-service`, `snippet-service-db` | Snippet service database name |
+| `SERVICE_POSTGRES_USER` | `snippet-service`, `snippet-service-db` | Snippet service database user |
+| `SERVICE_POSTGRES_PASSWORD` | `snippet-service`, `snippet-service-db` | Snippet service database password (secret) |
+| `PERMISSION_POSTGRES_DB` | `snippet-permission-service`, `snippet-permission-db` | Permission database name |
+| `PERMISSION_POSTGRES_USER` | `snippet-permission-service`, `snippet-permission-db` | Permission database user |
+| `PERMISSION_POSTGRES_PASSWORD` | `snippet-permission-service`, `snippet-permission-db` | Permission database password (secret) |
+| `AZURE_STORAGE_CONNECTION_STRING` | `snippet-service` | Blob Storage connection string (Azurite form above) |
+| `AUTH0_DOMAIN` | `snippet-service`, `snippet-permission-service` | Auth0 tenant domain |
+| `AUTH0_AUDIENCE` | `snippet-service`, `snippet-permission-service` | Auth0 API identifier |
+| `AUTH0_M2M_CLIENT_ID` | `snippet-service` | Auth0 Management API M2M client ID |
+| `AUTH0_M2M_CLIENT_SECRET` | `snippet-service` | Auth0 Management API M2M client secret (secret) |
+| `NEW_RELIC_LICENSE_KEY` | `snippet-service`, `snippet-permission-service` | New Relic license key (secret) |
+| `TLS_CERT_FILE` | `nginx` | Path to the PEM certificate chain |
+| `TLS_KEY_FILE` | `nginx` | Path to the PEM private key |
+| `NGINX_CONFIG_VERSION` | `nginx` | Computed by `scripts/deploy.sh`; do not set manually |
+| `TLS_VERSION` | `nginx` | Computed by `scripts/deploy.sh`; do not set manually |
+
+[`swarm/.env.example`](swarm/.env.example) lists the variables to provide
+by hand. Copy it to `swarm/.env` (git-ignored), fill in the values and
+load it into the shell before deploying, since `docker stack deploy` does
+not read `.env` files:
+
+```bash
+set -a; source swarm/.env; set +a
+scripts/deploy.sh
+```
 
 The UI is a static build, so its Auth0 settings (`VITE_AUTH0_DOMAIN`,
 `VITE_AUTH0_CLIENT_ID`, `VITE_AUTH0_AUDIENCE`) and `VITE_API_BASE_URL` are
@@ -260,14 +307,19 @@ will be configured after the Azure VMs and Swarm cluster are ready.
 ├── .github/
 │   └── workflows/
 │       └── CI.yml
+├── docs/
+│   ├── azure-vm-setup.md
+│   └── azure-vm.env.example
 ├── swarm/
 │   ├── nginx/
 │   │   └── default.conf
+│   ├── .env.example
 │   └── compose.yml
 ├── scripts/
 │   ├── certbot-deploy-hook.sh
 │   ├── certbot-init.sh
 │   └── deploy.sh
+├── .gitattributes
 ├── .gitignore
 └── README.md
 ```
