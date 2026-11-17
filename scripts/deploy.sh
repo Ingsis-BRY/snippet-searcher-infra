@@ -42,3 +42,5 @@ docker stack deploy \
     --with-registry-auth \
     -c "$COMPOSE_FILE" \
     "$STACK_NAME"
+
+echo "Deployed. Follow the background worker with: docker service logs snippet-searcher_snippet-worker"

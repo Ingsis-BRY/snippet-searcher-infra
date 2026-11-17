@@ -33,10 +33,32 @@ The initial Swarm stack includes the following services:
 | `printscript-engine` | `$PRINTSCRIPT_ENGINE_IMAGE` (e.g. `ghcr.io/ingsis-bry/printscript-engine:<tag>`) | PrintScript engine (validate and interactive run), 2 replicas, internal only |
 | `engine-proxy` | `nginx:1.28-alpine` | Internal proxy that picks the engine by the `X-Language` header and spreads requests over its replicas |
 | `printscript-ui` | `$PRINTSCRIPT_UI_IMAGE` (e.g. `ghcr.io/ingsis-bry/printscript-ui:<tag>`) | React/Vite frontend served by its own Nginx |
+| `snippet-worker` | `$SNIPPET_SERVICE_IMAGE` (same image, Spring profile `worker`) | Background consumer of the Redis stream: lint, format, run tests, re-validate on parser upgrade. No HTTP server, no published ports |
+| `redis` | `redis:7.4-alpine` | Redis Streams broker (AOF persistence), internal only |
 | `snippet-service-db` | `postgres:17` | Snippet service database |
 | `snippet-permission-service` | `$PERMISSION_SERVICE_IMAGE` (e.g. `ghcr.io/ingsis-bry/snippet-permission-service:<tag>`) | Snippet permissions |
 | `snippet-permission-db` | `postgres:17` | Permission database |
 | `azurite` | `mcr.microsoft.com/azure-storage/azurite` | Local Azure Blob Storage emulator |
+
+### Asynchronous processing
+
+`snippet-service` (profile `api`, the producer) publishes jobs to the Redis Stream `snippet.analysis`
+when a snippet is created or updated, when a user saves lint/format rules, and when tests change.
+`snippet-worker` (the same image with `SPRING_PROFILES_ACTIVE=worker`) consumes them through the
+consumer group `snippet-workers`. Jobs that fail permanently, or exceed the delivery limit, go to the
+dead-letter stream `snippet.analysis.dlq`. Pending entries are reclaimed after a crash, and a periodic
+sweeper republishes work lost while Redis was down. When the PrintScript library version reported by the
+engine changes, the worker re-validates every snippet.
+
+Inspect it on the manager node:
+
+```bash
+REDIS=$(docker ps -q -f name=snippet-searcher_redis)
+docker exec "$REDIS" redis-cli XINFO GROUPS snippet.analysis    # pending / lag per group
+docker exec "$REDIS" redis-cli XLEN snippet.analysis.dlq        # failed jobs
+docker exec "$REDIS" redis-cli XRANGE snippet.analysis.dlq - + COUNT 5
+docker service logs snippet-searcher_snippet-worker
+```
 
 ### Networking
 
@@ -48,6 +70,7 @@ The application accesses its dependencies using their service names:
 - Azurite Blob Storage: `azurite:10000`
 - Permission service: `snippet-permission-service:8080`
 - Permission database: `snippet-permission-db:5432`
+- Redis: `redis:6379` (no password, reachable only inside the overlay network)
 
 Nginx publishes ports `80` and `443` through Docker Swarm's ingress
 routing mesh. Port `80` redirects every request to HTTPS, except
@@ -172,7 +195,7 @@ sudo -E TLS_CERT_FILE=/etc/letsencrypt/live/<name>.duckdns.org/fullchain.pem \
 
 ### Persistence
 
-The snippet service database, the permission database and Azurite use named Docker volumes
+The snippet service database, the permission database, Azurite and Redis (`redis-data`) use named Docker volumes
 to preserve data beyond the lifecycle of individual containers. They are
 constrained to the manager node so they always run next to their volumes.
 
@@ -224,6 +247,8 @@ the machine-to-machine application `Snippet Searcher Backend`
 - `AUTH0_M2M_CLIENT_SECRET` (secret)
 
 Both services also need `NEW_RELIC_LICENSE_KEY` (secret).
+
+`snippet-worker` reuses `SNIPPET_SERVICE_IMAGE` and every `snippet-service` variable (shared through a YAML anchor in `swarm/compose.yml`). `REDIS_HOST` and `REDIS_PORT` are set in the compose file; no new variable has to be provided.
 
 Deployment also requires `SNIPPET_SERVICE_IMAGE`,
 `PERMISSION_SERVICE_IMAGE`, `PRINTSCRIPT_UI_IMAGE`, `PRINTSCRIPT_ENGINE_IMAGE`, `TLS_CERT_FILE` and `TLS_KEY_FILE`.
