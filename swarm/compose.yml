@@ -1,3 +1,21 @@
+# Shared by snippet-service (profile api) and snippet-worker (profile worker).
+x-snippet-service-environment: &snippet-service-environment
+  DB_HOST: snippet-service-db
+  POSTGRES_DB: "${SERVICE_POSTGRES_DB:?SERVICE_POSTGRES_DB must be set}"
+  POSTGRES_USER: "${SERVICE_POSTGRES_USER:?SERVICE_POSTGRES_USER must be set}"
+  POSTGRES_PASSWORD: "${SERVICE_POSTGRES_PASSWORD:?SERVICE_POSTGRES_PASSWORD must be set}"
+  AZURE_STORAGE_CONNECTION_STRING: "${AZURE_STORAGE_CONNECTION_STRING:?AZURE_STORAGE_CONNECTION_STRING must be set}"
+  AUTH0_DOMAIN: "${AUTH0_DOMAIN:?AUTH0_DOMAIN must be set}"
+  AUTH0_AUDIENCE: "${AUTH0_AUDIENCE:?AUTH0_AUDIENCE must be set}"
+  AUTH0_M2M_CLIENT_ID: "${AUTH0_M2M_CLIENT_ID:?AUTH0_M2M_CLIENT_ID must be set}"
+  AUTH0_M2M_CLIENT_SECRET: "${AUTH0_M2M_CLIENT_SECRET:?AUTH0_M2M_CLIENT_SECRET must be set}"
+  ENGINE_URL: "http://engine-proxy:80"
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  NEW_RELIC_APP_NAME: "snippet-service"
+  NEW_RELIC_LICENSE_KEY: "${NEW_RELIC_LICENSE_KEY:?NEW_RELIC_LICENSE_KEY must be set}"
+  NEW_RELIC_LOG_FILE_NAME: "STDOUT"
+
 services:
   nginx:
     image: nginx:1.28-alpine
@@ -37,23 +55,49 @@ services:
   snippet-service:
     image: "${SNIPPET_SERVICE_IMAGE:?SNIPPET_SERVICE_IMAGE must be set}"
     environment:
-      DB_HOST: snippet-service-db
-      POSTGRES_DB: "${SERVICE_POSTGRES_DB:?SERVICE_POSTGRES_DB must be set}"
-      POSTGRES_USER: "${SERVICE_POSTGRES_USER:?SERVICE_POSTGRES_USER must be set}"
-      POSTGRES_PASSWORD: "${SERVICE_POSTGRES_PASSWORD:?SERVICE_POSTGRES_PASSWORD must be set}"
-      AZURE_STORAGE_CONNECTION_STRING: "${AZURE_STORAGE_CONNECTION_STRING:?AZURE_STORAGE_CONNECTION_STRING must be set}"
-      AUTH0_DOMAIN: "${AUTH0_DOMAIN:?AUTH0_DOMAIN must be set}"
-      AUTH0_AUDIENCE: "${AUTH0_AUDIENCE:?AUTH0_AUDIENCE must be set}"
-      AUTH0_M2M_CLIENT_ID: "${AUTH0_M2M_CLIENT_ID:?AUTH0_M2M_CLIENT_ID must be set}"
-      AUTH0_M2M_CLIENT_SECRET: "${AUTH0_M2M_CLIENT_SECRET:?AUTH0_M2M_CLIENT_SECRET must be set}"
-      ENGINE_URL: "http://engine-proxy:80"
+      <<: *snippet-service-environment
+      SPRING_PROFILES_ACTIVE: api
       NEW_RELIC_APP_NAME: "snippet-service"
-      NEW_RELIC_LICENSE_KEY: "${NEW_RELIC_LICENSE_KEY:?NEW_RELIC_LICENSE_KEY must be set}"
-      NEW_RELIC_LOG_FILE_NAME: "STDOUT"
     networks:
       - snippet-network
     deploy:
       replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  # Same image as snippet-service, started with the `worker` profile: no HTTP server,
+  # it consumes the Redis stream snippet.analysis (lint, format, tests, re-validation).
+  snippet-worker:
+    image: "${SNIPPET_SERVICE_IMAGE:?SNIPPET_SERVICE_IMAGE must be set}"
+    environment:
+      <<: *snippet-service-environment
+      SPRING_PROFILES_ACTIVE: worker
+      NEW_RELIC_APP_NAME: "snippet-worker"
+    networks:
+      - snippet-network
+    stop_grace_period: 30s
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - snippet-network
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
       restart_policy:
         condition: on-failure
 
@@ -218,3 +262,4 @@ volumes:
   snippet-service-db-data:
   azurite-data:
   snippet-permission-db-data:
+  redis-data:
