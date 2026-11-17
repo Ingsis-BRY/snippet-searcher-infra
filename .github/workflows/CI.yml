@@ -47,6 +47,8 @@ jobs:
           AZURE_STORAGE_CONNECTION_STRING: ci-placeholder
           PRINTSCRIPT_UI_IMAGE: ghcr.io/ingsis-bry/printscript-ui:latest
           PERMISSION_SERVICE_IMAGE: ghcr.io/ingsis-bry/snippet-permission-service:latest
+          PRINTSCRIPT_ENGINE_IMAGE: ghcr.io/ingsis-bry/printscript-engine:latest
+          ENGINE_PROXY_CONFIG_VERSION: ci-placeholder
           PERMISSION_POSTGRES_DB: ci-placeholder
           PERMISSION_POSTGRES_USER: ci-placeholder
           PERMISSION_POSTGRES_PASSWORD: ci-placeholder
@@ -61,4 +63,11 @@ jobs:
           docker run --rm
           -v "$PWD/swarm/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro"
           -v /tmp/tls:/run/secrets:ro
+          nginx:1.28-alpine nginx -t
+
+      - name: Validate engine proxy configuration
+        run: >
+          docker run --rm
+          --add-host printscript-engine:127.0.0.1
+          -v "$PWD/swarm/nginx/engine-proxy.conf:/etc/nginx/conf.d/default.conf:ro"
           nginx:1.28-alpine nginx -t
