@@ -19,15 +19,46 @@ while worker nodes execute assigned tasks.
 
 The manager may also run application containers.
 
+To create a VM step by step with the Azure CLI, see
+[`docs/azure-vm-setup.md`](docs/azure-vm-setup.md).
+
 ## Services
 
 The initial Swarm stack includes the following services:
 
 | Service | Image | Purpose |
 |---|---|---|
-| `snippet-service` | `ghcr.io/ingsis-bry/snippet-service:latest` | Spring Boot application |
-| `postgres` | `postgres:17` | Relational database |
+| `nginx` | `nginx:1.28-alpine` | Reverse proxy, TLS termination and public entry point |
+| `snippet-service` | `$SNIPPET_SERVICE_IMAGE` (e.g. `ghcr.io/ingsis-bry/snippet-service:<tag>`) | Spring Boot application |
+| `printscript-engine` | `$PRINTSCRIPT_ENGINE_IMAGE` (e.g. `ghcr.io/ingsis-bry/printscript-engine:<tag>`) | PrintScript engine (validate and interactive run), 2 replicas, internal only |
+| `engine-proxy` | `nginx:1.28-alpine` | Internal proxy that picks the engine by the `X-Language` header and spreads requests over its replicas |
+| `printscript-ui` | `$PRINTSCRIPT_UI_IMAGE` (e.g. `ghcr.io/ingsis-bry/printscript-ui:<tag>`) | React/Vite frontend served by its own Nginx |
+| `snippet-worker` | `$SNIPPET_SERVICE_IMAGE` (same image, Spring profile `worker`) | Background consumer of the Redis stream: lint, format, run tests, re-validate on parser upgrade. No HTTP server, no published ports |
+| `redis` | `redis:7.4-alpine` | Redis Streams broker (AOF persistence), internal only |
+| `snippet-service-db` | `postgres:17` | Snippet service database |
+| `snippet-permission-service` | `$PERMISSION_SERVICE_IMAGE` (e.g. `ghcr.io/ingsis-bry/snippet-permission-service:<tag>`) | Snippet permissions |
+| `snippet-permission-db` | `postgres:17` | Permission database |
 | `azurite` | `mcr.microsoft.com/azure-storage/azurite` | Local Azure Blob Storage emulator |
+
+### Asynchronous processing
+
+`snippet-service` (profile `api`, the producer) publishes jobs to the Redis Stream `snippet.analysis`
+when a snippet is created or updated, when a user saves lint/format rules, and when tests change.
+`snippet-worker` (the same image with `SPRING_PROFILES_ACTIVE=worker`) consumes them through the
+consumer group `snippet-workers`. Jobs that fail permanently, or exceed the delivery limit, go to the
+dead-letter stream `snippet.analysis.dlq`. Pending entries are reclaimed after a crash, and a periodic
+sweeper republishes work lost while Redis was down. When the PrintScript library version reported by the
+engine changes, the worker re-validates every snippet.
+
+Inspect it on the manager node:
+
+```bash
+REDIS=$(docker ps -q -f name=snippet-searcher_redis)
+docker exec "$REDIS" redis-cli XINFO GROUPS snippet.analysis    # pending / lag per group
+docker exec "$REDIS" redis-cli XLEN snippet.analysis.dlq        # failed jobs
+docker exec "$REDIS" redis-cli XRANGE snippet.analysis.dlq - + COUNT 5
+docker service logs snippet-searcher_snippet-worker
+```
 
 ### Networking
 
@@ -35,18 +66,138 @@ Services communicate through the `snippet-network` overlay network.
 
 The application accesses its dependencies using their service names:
 
-- PostgreSQL: `postgres:5432`
+- Snippet service database: `snippet-service-db:5432`
 - Azurite Blob Storage: `azurite:10000`
+- Permission service: `snippet-permission-service:8080`
+- Permission database: `snippet-permission-db:5432`
+- Redis: `redis:6379` (no password, reachable only inside the overlay network)
 
-The application publishes port `8080` through Docker Swarm's ingress
-routing mesh.
+Nginx publishes ports `80` and `443` through Docker Swarm's ingress
+routing mesh. Port `80` redirects every request to HTTPS, except
+`/nginx-health`. Port `443` terminates TLS and routes requests:
 
-PostgreSQL and Azurite do not expose published ports in the Swarm stack.
+- `/api/snippets/{id}/run` (WebSocket) to `snippet-service:8080`, with the `/api` prefix removed.
+- `/api/*` to `snippet-service:8080`, with the `/api` prefix removed.
+- everything else to `printscript-ui:80`.
+
+The UI is a static build: 
+- `VITE_API_BASE_URL`, `VITE_AUTH0_DOMAIN` and`VITE_AUTH0_CLIENT_ID` are baked into its image at build time
+- `VITE_API_BASE_URL` must be `https://<domain>/api`. 
+- The `printscript-ui`service has no published ports.
+
+Nginx configuration lives in `swarm/nginx/default.conf` and is delivered to the container as a
+Swarm config.
+
+Swarm configs are immutable, so the config name includes a hash of the
+file (`NGINX_CONFIG_VERSION`), computed by `scripts/deploy.sh`. Changing
+the file produces a new config and Nginx is redeployed with it.
+
+- Only Nginx publishes ports in the Swarm stack. 
+- The other services, including `snippet-permission-service`, are reachable only inside the
+`snippet-network` overlay network.
+
+### Engine and interactive run
+
+`snippet-service` validates and runs snippets through the PrintScript
+engine. It calls `ENGINE_URL` (`http://engine-proxy:80`). `engine-proxy`
+and `printscript-engine` sit on the internal overlay network
+`engine-network`; only `engine-proxy` is also on `snippet-network`, and
+neither publishes ports. `printscript-engine` uses `endpoint_mode: dnsrr`
+so DNS returns one address per replica and the proxy's `resolve` and
+`proxy_next_upstream` work per replica.
+
+The proxy config is `swarm/nginx/engine-proxy.conf`, a byte-identical copy
+of `nginx/engine-proxy.conf` in the `printscript-engine` repo (the source of
+truth: keep both in sync). Like the nginx config, it is a Swarm config named
+with a hash of the file (`ENGINE_PROXY_CONFIG_VERSION`, computed by
+`scripts/deploy.sh`).
+
+The interactive run is a WebSocket at `/api/snippets/{id}/run`. Nginx has a
+dedicated location for it with `Upgrade`/`Connection` forwarding and 360 s
+timeouts. The browser sends the access token in the `Sec-WebSocket-Protocol`
+header (`snippet-run.v1, bearer.<jwt>`), never in the URL, so it does not
+reach the access or error logs (the default log format does not include
+that header).
+
+### TLS
+
+The TLS certificate and private key are delivered to Nginx as Swarm
+secrets. They are read from files on the machine running
+`scripts/deploy.sh`:
+
+- `TLS_CERT_FILE`: certificate chain in PEM format.
+- `TLS_KEY_FILE`: private key in PEM format.
+
+The secret names include a hash of both files (`TLS_VERSION`), so
+replacing the certificate produces new secrets on the next deployment.
+
+Certificate and key files must never be committed to this repository.
+
+For local testing, a self-signed certificate can be generated with:
+
+```bash
+mkdir -p certs
+openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
+    -subj "/CN=localhost" \
+    -keyout certs/tls.key -out certs/tls.crt
+```
+
+### Let's Encrypt
+
+Trusted certificates are issued by Let's Encrypt using Certbot on the
+manager node and the HTTP-01 webroot challenge. Nginx serves
+`/.well-known/acme-challenge/` on port `80` from `/var/www/certbot`,
+a directory on the manager that is bind-mounted into the container.
+Nginx is constrained to the manager node for this reason.
+
+Prerequisites:
+
+- A DuckDNS subdomain (`<name>.duckdns.org`) whose IP points to the
+  manager VM's public IP. The Azure public IP must be static; if it
+  changes, update it on duckdns.org.
+- Ports `80` and `443` open in the VM's network security group.
+- Certbot installed on the manager: `sudo snap install --classic certbot`.
+
+The webroot challenge does not use the DuckDNS API, so no DuckDNS token
+is required.
+
+First-time setup on the manager:
+
+1. Create the webroot: `sudo mkdir -p /var/www/certbot`.
+2. Deploy the stack with a self-signed certificate (see above).
+3. Request the certificate and install the renewal hook:
+
+   ```bash
+   sudo DOMAIN=<name>.duckdns.org CERTBOT_EMAIL=<email> scripts/certbot-init.sh
+   ```
+
+   Set `CERTBOT_STAGING=1` to test against the Let's Encrypt staging
+   environment first. Before requesting the real certificate, remove the
+   staging one with `sudo certbot delete --cert-name <name>.duckdns.org`.
+
+`scripts/certbot-init.sh` issues the certificate, installs
+`scripts/certbot-deploy-hook.sh` as a Certbot deploy hook, switches Nginx
+to the new certificate and runs `certbot renew --dry-run`.
+
+Renewal is automatic. The Certbot snap runs `certbot renew` twice a day,
+and after each successful renewal the deploy hook creates new TLS
+secrets and updates only the Nginx service, so renewal does not require
+the application's credentials.
+
+Later full deployments must use the Let's Encrypt files and run as root,
+since `/etc/letsencrypt` is only readable by root:
+
+```bash
+sudo -E TLS_CERT_FILE=/etc/letsencrypt/live/<name>.duckdns.org/fullchain.pem \
+    TLS_KEY_FILE=/etc/letsencrypt/live/<name>.duckdns.org/privkey.pem \
+    scripts/deploy.sh
+```
 
 ### Persistence
 
-PostgreSQL and Azurite use named Docker volumes to preserve data beyond
-the lifecycle of individual containers.
+The snippet service database, the permission database, Azurite and Redis (`redis-data`) use named Docker volumes
+to preserve data beyond the lifecycle of individual containers. They are
+constrained to the manager node so they always run next to their volumes.
 
 These volumes are local to the node where they are created. Docker Swarm
 does not automatically replicate or migrate their data between nodes.
@@ -56,13 +207,97 @@ the infrastructure is treated as production-ready.
 
 ### Configuration and Secrets
 
-The application receives its database and storage configuration through
-environment variables:
+`snippet-service` and its database (`snippet-service-db`) receive their
+database settings from the following variables, passed to the containers
+as `POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD`:
 
-- `POSTGRES_DB`
-- `POSTGRES_USER`
-- `POSTGRES_PASSWORD`
-- `AZURE_STORAGE_CONNECTION_STRING`
+- `SERVICE_POSTGRES_DB`
+- `SERVICE_POSTGRES_USER`
+- `SERVICE_POSTGRES_PASSWORD`
+
+The permission service and its database use their own variables, passed
+to the containers the same way:
+
+- `PERMISSION_POSTGRES_DB`
+- `PERMISSION_POSTGRES_USER`
+- `PERMISSION_POSTGRES_PASSWORD`
+
+`snippet-service` stores snippet content in Azure Blob Storage through
+`AZURE_STORAGE_CONNECTION_STRING`. With the in-stack Azurite emulator it
+must point to the `azurite` service:
+
+```text
+DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;
+```
+
+`devstoreaccount1` and its key are Azurite's public, well-known emulator
+defaults, not a real credential. A real Azure Storage account needs its
+own connection string, which is a secret.
+
+Both services validate Auth0 access tokens and need:
+
+- `AUTH0_DOMAIN`: tenant domain, `snippet-searcher-bry.us.auth0.com`
+- `AUTH0_AUDIENCE`: identifier of the Auth0 API, `https://snippet-searcher-api`
+
+`snippet-service` also searches users in the Auth0 Management API with
+the machine-to-machine application `Snippet Searcher Backend`
+(`read:users`):
+
+- `AUTH0_M2M_CLIENT_ID`
+- `AUTH0_M2M_CLIENT_SECRET` (secret)
+
+Both services also need `NEW_RELIC_LICENSE_KEY` (secret).
+
+`snippet-worker` reuses `SNIPPET_SERVICE_IMAGE` and every `snippet-service` variable (shared through a YAML anchor in `swarm/compose.yml`). `REDIS_HOST` and `REDIS_PORT` are set in the compose file; no new variable has to be provided.
+
+Deployment also requires `SNIPPET_SERVICE_IMAGE`,
+`PERMISSION_SERVICE_IMAGE`, `PRINTSCRIPT_UI_IMAGE`, `PRINTSCRIPT_ENGINE_IMAGE`, `TLS_CERT_FILE` and `TLS_KEY_FILE`.
+
+#### Stack variables reference
+
+`swarm/compose.yml` fails to render if any of these variables is missing.
+
+| Variable | Used by | Description |
+|---|---|---|
+| `SNIPPET_SERVICE_IMAGE` | `snippet-service` | Image reference, e.g. `ghcr.io/ingsis-bry/snippet-service:<tag>` |
+| `PERMISSION_SERVICE_IMAGE` | `snippet-permission-service` | Image reference, e.g. `ghcr.io/ingsis-bry/snippet-permission-service:<tag>` |
+| `PRINTSCRIPT_UI_IMAGE` | `printscript-ui` | Image reference, e.g. `ghcr.io/ingsis-bry/printscript-ui:<tag>` |
+| `PRINTSCRIPT_ENGINE_IMAGE` | `printscript-engine` | Image reference, e.g. `ghcr.io/ingsis-bry/printscript-engine:<tag>` |
+| `ENGINE_URL` | `snippet-service` | Set in `swarm/compose.yml` to `http://engine-proxy:80`; not provided by hand |
+| `SERVICE_POSTGRES_DB` | `snippet-service`, `snippet-service-db` | Snippet service database name |
+| `SERVICE_POSTGRES_USER` | `snippet-service`, `snippet-service-db` | Snippet service database user |
+| `SERVICE_POSTGRES_PASSWORD` | `snippet-service`, `snippet-service-db` | Snippet service database password (secret) |
+| `PERMISSION_POSTGRES_DB` | `snippet-permission-service`, `snippet-permission-db` | Permission database name |
+| `PERMISSION_POSTGRES_USER` | `snippet-permission-service`, `snippet-permission-db` | Permission database user |
+| `PERMISSION_POSTGRES_PASSWORD` | `snippet-permission-service`, `snippet-permission-db` | Permission database password (secret) |
+| `AZURE_STORAGE_CONNECTION_STRING` | `snippet-service` | Blob Storage connection string (Azurite form above) |
+| `AUTH0_DOMAIN` | `snippet-service`, `snippet-permission-service` | Auth0 tenant domain |
+| `AUTH0_AUDIENCE` | `snippet-service`, `snippet-permission-service` | Auth0 API identifier |
+| `AUTH0_M2M_CLIENT_ID` | `snippet-service` | Auth0 Management API M2M client ID |
+| `AUTH0_M2M_CLIENT_SECRET` | `snippet-service` | Auth0 Management API M2M client secret (secret) |
+| `NEW_RELIC_LICENSE_KEY` | `snippet-service`, `snippet-permission-service` | New Relic license key (secret) |
+| `TLS_CERT_FILE` | `nginx` | Path to the PEM certificate chain |
+| `TLS_KEY_FILE` | `nginx` | Path to the PEM private key |
+| `NGINX_CONFIG_VERSION` | `nginx` | Computed by `scripts/deploy.sh`; do not set manually |
+| `ENGINE_PROXY_CONFIG_VERSION` | `engine-proxy` | Computed by `scripts/deploy.sh`; do not set manually |
+| `TLS_VERSION` | `nginx` | Computed by `scripts/deploy.sh`; do not set manually |
+
+[`swarm/.env.example`](swarm/.env.example) lists the variables to provide
+by hand. Copy it to `swarm/.env` (git-ignored), fill in the values and
+load it into the shell before deploying, since `docker stack deploy` does
+not read `.env` files:
+
+```bash
+set -a; source swarm/.env; set +a
+scripts/deploy.sh
+```
+
+The UI is a static build, so its Auth0 settings (`VITE_AUTH0_DOMAIN`,
+`VITE_AUTH0_CLIENT_ID`, `VITE_AUTH0_AUDIENCE`) and `VITE_API_BASE_URL` are
+set when its image is built, not here. The public URL of each environment
+(`https://<domain>`) must be added to the Allowed Callback URLs, Allowed
+Logout URLs and Allowed Web Origins of the `Snippet Searcher UI`
+application in Auth0.
 
 Required variables must be provided when deploying the stack.
 
@@ -91,7 +326,7 @@ The `main` branch may remain from the repository's initial setup, but
 
 ### Continuous Integration
 
-The GitHub Actions workflow in `.github/workflows/ci.yml` validates
+The GitHub Actions workflow in `.github/workflows/CI.yml` validates
 infrastructure changes.
 
 It runs on:
@@ -100,8 +335,9 @@ It runs on:
 - Pushes to `dev`.
 - Manual workflow dispatch.
 
-The workflow checks the Bash syntax of `scripts/deploy.sh` and validates
-the Swarm Compose configuration using Docker Compose.
+The workflow checks the Bash syntax of the scripts in `scripts/`, lints
+them with ShellCheck, validates the Swarm Compose configuration using
+Docker Compose, and validates the Nginx and engine proxy configurations with `nginx -t`.
 
 This validation does not deploy services or verify connectivity between
 the application and its dependencies.
@@ -112,7 +348,7 @@ Deployment is initially performed using the script:
 
 `scripts/deploy.sh`
 
-The script checks that an image reference is provided and that Docker
+The script checks that the four image references are provided and that Docker
 Swarm is active before executing `docker stack deploy`.
 
 Automated deployments to the development and production environments
@@ -124,12 +360,21 @@ will be configured after the Azure VMs and Swarm cluster are ready.
 .
 ├── .github/
 │   └── workflows/
-│       └── ci.yml
+│       └── CI.yml
+├── docs/
+│   ├── azure-vm-setup.md
+│   └── azure-vm.env.example
 ├── swarm/
+│   ├── nginx/
+│   │   ├── default.conf
+│   │   └── engine-proxy.conf
+│   ├── .env.example
 │   └── compose.yml
 ├── scripts/
+│   ├── certbot-deploy-hook.sh
+│   ├── certbot-init.sh
 │   └── deploy.sh
-├── docs/
-│   └── architecture.md
+├── .gitattributes
 ├── .gitignore
 └── README.md
+```

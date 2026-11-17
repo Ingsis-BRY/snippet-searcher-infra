@@ -20,14 +20,54 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Validate deployment script
-        run: bash -n scripts/deploy.sh
+      - name: Validate script syntax
+        run: for script in scripts/*.sh; do bash -n "$script"; done
+
+      - name: Lint scripts
+        run: docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:v0.10.0 scripts/*.sh
+
+      - name: Generate test TLS certificate
+        run: >
+          mkdir -p /tmp/tls &&
+          openssl req -x509 -nodes -newkey rsa:2048 -days 1
+          -subj "/CN=localhost"
+          -keyout /tmp/tls/tls_key -out /tmp/tls/tls_cert
 
       - name: Validate Swarm configuration
         run: docker compose -f swarm/compose.yml config -q
         env:
           SNIPPET_SERVICE_IMAGE: ghcr.io/ingsis-bry/snippet-service:latest
-          POSTGRES_DB: ${POSTGRES_DB}
-          POSTGRES_USER: ${POSTGRES_USER}
-          POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-          AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING}
+          NGINX_CONFIG_VERSION: ci-placeholder
+          TLS_VERSION: ci-placeholder
+          TLS_CERT_FILE: /tmp/tls/tls_cert
+          TLS_KEY_FILE: /tmp/tls/tls_key
+          SERVICE_POSTGRES_DB: ci-placeholder
+          SERVICE_POSTGRES_USER: ci-placeholder
+          SERVICE_POSTGRES_PASSWORD: ci-placeholder
+          AZURE_STORAGE_CONNECTION_STRING: ci-placeholder
+          PRINTSCRIPT_UI_IMAGE: ghcr.io/ingsis-bry/printscript-ui:latest
+          PERMISSION_SERVICE_IMAGE: ghcr.io/ingsis-bry/snippet-permission-service:latest
+          PRINTSCRIPT_ENGINE_IMAGE: ghcr.io/ingsis-bry/printscript-engine:latest
+          ENGINE_PROXY_CONFIG_VERSION: ci-placeholder
+          PERMISSION_POSTGRES_DB: ci-placeholder
+          PERMISSION_POSTGRES_USER: ci-placeholder
+          PERMISSION_POSTGRES_PASSWORD: ci-placeholder
+          NEW_RELIC_LICENSE_KEY: ci-placeholder
+          AUTH0_DOMAIN: ci-placeholder.auth0.com
+          AUTH0_AUDIENCE: https://snippet-searcher-api
+          AUTH0_M2M_CLIENT_ID: ci-placeholder
+          AUTH0_M2M_CLIENT_SECRET: ci-placeholder
+
+      - name: Validate Nginx configuration
+        run: >
+          docker run --rm
+          -v "$PWD/swarm/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro"
+          -v /tmp/tls:/run/secrets:ro
+          nginx:1.28-alpine nginx -t
+
+      - name: Validate engine proxy configuration
+        run: >
+          docker run --rm
+          --add-host printscript-engine:127.0.0.1
+          -v "$PWD/swarm/nginx/engine-proxy.conf:/etc/nginx/conf.d/default.conf:ro"
+          nginx:1.28-alpine nginx -t
