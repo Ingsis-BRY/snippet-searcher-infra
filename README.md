@@ -122,14 +122,15 @@ that header).
 ### TLS
 
 The TLS certificate and private key are delivered to Nginx as Swarm
-secrets. They are read from files on the machine running
-`scripts/deploy.sh`:
+secrets (`tls-cert-<version>` and `tls-key-<version>`, where the version is a
+hash of both files).
 
-- `TLS_CERT_FILE`: certificate chain in PEM format.
-- `TLS_KEY_FILE`: private key in PEM format.
-
-The secret names include a hash of both files (`TLS_VERSION`), so
-replacing the certificate produces new secrets on the next deployment.
+On the **first** deployment only, `scripts/deploy.sh` creates them from the
+files named by `TLS_CERT_FILE` (certificate chain, PEM) and `TLS_KEY_FILE`
+(private key, PEM), normally a self-signed certificate. Afterwards it reuses
+the secrets that `nginx` already has, so automated deployments need no
+certificate files and never overwrite the Let's Encrypt certificate that the
+Certbot deploy hook installed.
 
 Certificate and key files must never be committed to this repository.
 
@@ -184,14 +185,8 @@ and after each successful renewal the deploy hook creates new TLS
 secrets and updates only the Nginx service, so renewal does not require
 the application's credentials.
 
-Later full deployments must use the Let's Encrypt files and run as root,
-since `/etc/letsencrypt` is only readable by root:
-
-```bash
-sudo -E TLS_CERT_FILE=/etc/letsencrypt/live/<name>.duckdns.org/fullchain.pem \
-    TLS_KEY_FILE=/etc/letsencrypt/live/<name>.duckdns.org/privkey.pem \
-    scripts/deploy.sh
-```
+Later full deployments (manual or from GitHub Actions) reuse the TLS secrets
+that Certbot installed and do not need the certificate files.
 
 ### Persistence
 
@@ -251,11 +246,40 @@ Both services also need `NEW_RELIC_LICENSE_KEY` (secret).
 `snippet-worker` reuses `SNIPPET_SERVICE_IMAGE` and every `snippet-service` variable (shared through a YAML anchor in `swarm/compose.yml`). `REDIS_HOST` and `REDIS_PORT` are set in the compose file; no new variable has to be provided.
 
 Deployment also requires `SNIPPET_SERVICE_IMAGE`,
-`PERMISSION_SERVICE_IMAGE`, `PRINTSCRIPT_UI_IMAGE`, `PRINTSCRIPT_ENGINE_IMAGE`, `TLS_CERT_FILE` and `TLS_KEY_FILE`.
+`PERMISSION_SERVICE_IMAGE`, `PRINTSCRIPT_UI_IMAGE` and `PRINTSCRIPT_ENGINE_IMAGE`.
+
+#### Docker secrets
+
+Passwords and keys are Docker secrets that already exist in the Swarm. They
+are created once per VM with `scripts/create-secrets.sh` (values are typed at
+a hidden prompt and go to Docker over stdin; nothing is written to a file or
+to the shell history). `swarm/compose.yml` declares them as `external` and
+`scripts/deploy.sh` stops if one is missing. No `.env` file is used.
+
+| Secret | Mounted in | As | Description |
+|---|---|---|---|
+| `service-postgres-password` | `snippet-service`, `snippet-worker`, `snippet-service-db` | `POSTGRES_PASSWORD` / `postgres_password` | Snippet service database password |
+| `permission-postgres-password` | `snippet-permission-service`, `snippet-permission-db` | `POSTGRES_PASSWORD` / `postgres_password` | Permission database password |
+| `azure-storage-connection-string` | `snippet-service`, `snippet-worker` | `auth0-m2m-client-secret` | `snippet-service`, `snippet-worker` | `new-relic-license-key` | `snippet-service`, `snippet-worker`, `snippet-permission-service` 
+The Spring services read them through `SPRING_CONFIG_IMPORT=configtree:/run/secrets/`:
+each file is named after the placeholder in `application.yml`, so the
+applications need no change. The New Relic agent only reads environment
+variables, so the entrypoint exports `NEW_RELIC_LICENSE_KEY` from its secret
+file before starting the same `java` command as the image. The Postgres images
+use their native `POSTGRES_PASSWORD_FILE`.
+
+Docker secrets are immutable. To rotate one, remove the services that use it
+(or the whole stack), `docker secret rm <name>`, create it again with
+`scripts/create-secrets.sh` and redeploy.
+
+The remaining settings (images, database names and users, Auth0 domain,
+audience and client ID) are not secret. They are environment variables
+supplied at deploy time; in GitHub Actions they are the `vars` of the
+`dev` / `prod` environment.
 
 #### Stack variables reference
 
-`swarm/compose.yml` fails to render if any of these variables is missing.
+`swarm/compose.yml` fails to render if any of these variables is missing. Secrets are listed above; `TLS_CERT_FILE` and `TLS_KEY_FILE` are only read on the first deployment.
 
 | Variable | Used by | Description |
 |---|---|---|
@@ -266,31 +290,14 @@ Deployment also requires `SNIPPET_SERVICE_IMAGE`,
 | `ENGINE_URL` | `snippet-service` | Set in `swarm/compose.yml` to `http://engine-proxy:80`; not provided by hand |
 | `SERVICE_POSTGRES_DB` | `snippet-service`, `snippet-service-db` | Snippet service database name |
 | `SERVICE_POSTGRES_USER` | `snippet-service`, `snippet-service-db` | Snippet service database user |
-| `SERVICE_POSTGRES_PASSWORD` | `snippet-service`, `snippet-service-db` | Snippet service database password (secret) |
 | `PERMISSION_POSTGRES_DB` | `snippet-permission-service`, `snippet-permission-db` | Permission database name |
 | `PERMISSION_POSTGRES_USER` | `snippet-permission-service`, `snippet-permission-db` | Permission database user |
-| `PERMISSION_POSTGRES_PASSWORD` | `snippet-permission-service`, `snippet-permission-db` | Permission database password (secret) |
-| `AZURE_STORAGE_CONNECTION_STRING` | `snippet-service` | Blob Storage connection string (Azurite form above) |
 | `AUTH0_DOMAIN` | `snippet-service`, `snippet-permission-service` | Auth0 tenant domain |
 | `AUTH0_AUDIENCE` | `snippet-service`, `snippet-permission-service` | Auth0 API identifier |
 | `AUTH0_M2M_CLIENT_ID` | `snippet-service` | Auth0 Management API M2M client ID |
-| `AUTH0_M2M_CLIENT_SECRET` | `snippet-service` | Auth0 Management API M2M client secret (secret) |
-| `NEW_RELIC_LICENSE_KEY` | `snippet-service`, `snippet-permission-service` | New Relic license key (secret) |
-| `TLS_CERT_FILE` | `nginx` | Path to the PEM certificate chain |
-| `TLS_KEY_FILE` | `nginx` | Path to the PEM private key |
 | `NGINX_CONFIG_VERSION` | `nginx` | Computed by `scripts/deploy.sh`; do not set manually |
 | `ENGINE_PROXY_CONFIG_VERSION` | `engine-proxy` | Computed by `scripts/deploy.sh`; do not set manually |
 | `TLS_VERSION` | `nginx` | Computed by `scripts/deploy.sh`; do not set manually |
-
-[`swarm/.env.example`](swarm/.env.example) lists the variables to provide
-by hand. Copy it to `swarm/.env` (git-ignored), fill in the values and
-load it into the shell before deploying, since `docker stack deploy` does
-not read `.env` files:
-
-```bash
-set -a; source swarm/.env; set +a
-scripts/deploy.sh
-```
 
 The UI is a static build, so its Auth0 settings (`VITE_AUTH0_DOMAIN`,
 `VITE_AUTH0_CLIENT_ID`, `VITE_AUTH0_AUDIENCE`) and `VITE_API_BASE_URL` are
@@ -344,15 +351,41 @@ the application and its dependencies.
 
 ### Continuous Deployment
 
-Deployment is initially performed using the script:
+Deployments run `scripts/deploy.sh` on the target VM over SSH:
 
-`scripts/deploy.sh`
+| Workflow | Target | Trigger |
+|---|---|---|
+| `.github/workflows/CD-dev.yml` | dev VM | Push to `dev` (a merged PR into `dev`), or manual dispatch |
+| `.github/workflows/CD-prod.yml` | prod VM | A pull request from `dev` into `prod` is **merged**. PRs from other branches, unmerged PRs and direct pushes never deploy |
 
-The script checks that the four image references are provided and that Docker
-Swarm is active before executing `docker stack deploy`.
+Each workflow uses the GitHub Environment of the same name (`dev`, `prod`;
+add required reviewers to `prod`) and never runs two deployments of the same
+environment at once. The VM checks out the exact commit that triggered the run.
 
-Automated deployments to the development and production environments
-will be configured after the Azure VMs and Swarm cluster are ready.
+Environment **secrets**: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`
+(a dedicated deploy key, not a personal one) and `DEPLOY_KNOWN_HOSTS`
+(`ssh-keyscan <host>`).
+
+Environment **variables** (not secret): `DEPLOY_PATH` (absolute path of the
+repository clone on the VM), `SNIPPET_SERVICE_IMAGE`,
+`PERMISSION_SERVICE_IMAGE`, `PRINTSCRIPT_UI_IMAGE`,
+`PRINTSCRIPT_ENGINE_IMAGE`, `SERVICE_POSTGRES_DB`, `SERVICE_POSTGRES_USER`,
+`PERMISSION_POSTGRES_DB`, `PERMISSION_POSTGRES_USER`, `AUTH0_DOMAIN`,
+`AUTH0_AUDIENCE` and `AUTH0_M2M_CLIENT_ID`.
+
+Before the first automated deployment, on each VM: clone this repository at
+`DEPLOY_PATH`, run `scripts/create-secrets.sh`, and do the first deployment
+by hand with a self-signed certificate (see TLS). The deploy user needs
+passwordless `sudo`.
+
+GitHub-hosted runners have no fixed IP and SSH is closed to everyone but
+the administrator. Each workflow logs in to Azure with OIDC, creates a
+temporary NSG rule (`Allow-GitHub-Deploy`) allowing port 22 from the runner's
+IP only, deploys, and deletes the rule in a final step that always runs. The
+Azure identity can only edit security rules of that one NSG; see
+`docs/azure-vm-setup.md`, section 4.4.1. Add the environment variables
+`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`,
+`AZURE_RESOURCE_GROUP` and `AZURE_NSG_NAME`.
 
 ## Repository Structure
 
@@ -360,6 +393,8 @@ will be configured after the Azure VMs and Swarm cluster are ready.
 .
 ├── .github/
 │   └── workflows/
+│       ├── CD-dev.yml
+│       ├── CD-prod.yml
 │       └── CI.yml
 ├── docs/
 │   ├── azure-vm-setup.md
@@ -368,11 +403,11 @@ will be configured after the Azure VMs and Swarm cluster are ready.
 │   ├── nginx/
 │   │   ├── default.conf
 │   │   └── engine-proxy.conf
-│   ├── .env.example
 │   └── compose.yml
 ├── scripts/
 │   ├── certbot-deploy-hook.sh
 │   ├── certbot-init.sh
+│   ├── create-secrets.sh
 │   └── deploy.sh
 ├── .gitattributes
 ├── .gitignore

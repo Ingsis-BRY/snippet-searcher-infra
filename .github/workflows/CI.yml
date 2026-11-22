@@ -39,24 +39,17 @@ jobs:
           SNIPPET_SERVICE_IMAGE: ghcr.io/ingsis-bry/snippet-service:latest
           NGINX_CONFIG_VERSION: ci-placeholder
           TLS_VERSION: ci-placeholder
-          TLS_CERT_FILE: /tmp/tls/tls_cert
-          TLS_KEY_FILE: /tmp/tls/tls_key
           SERVICE_POSTGRES_DB: ci-placeholder
           SERVICE_POSTGRES_USER: ci-placeholder
-          SERVICE_POSTGRES_PASSWORD: ci-placeholder
-          AZURE_STORAGE_CONNECTION_STRING: ci-placeholder
           PRINTSCRIPT_UI_IMAGE: ghcr.io/ingsis-bry/printscript-ui:latest
           PERMISSION_SERVICE_IMAGE: ghcr.io/ingsis-bry/snippet-permission-service:latest
           PRINTSCRIPT_ENGINE_IMAGE: ghcr.io/ingsis-bry/printscript-engine:latest
           ENGINE_PROXY_CONFIG_VERSION: ci-placeholder
           PERMISSION_POSTGRES_DB: ci-placeholder
           PERMISSION_POSTGRES_USER: ci-placeholder
-          PERMISSION_POSTGRES_PASSWORD: ci-placeholder
-          NEW_RELIC_LICENSE_KEY: ci-placeholder
           AUTH0_DOMAIN: ci-placeholder.auth0.com
           AUTH0_AUDIENCE: https://snippet-searcher-api
           AUTH0_M2M_CLIENT_ID: ci-placeholder
-          AUTH0_M2M_CLIENT_SECRET: ci-placeholder
 
       - name: Validate Nginx configuration
         run: >

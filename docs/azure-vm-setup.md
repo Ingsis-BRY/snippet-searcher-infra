@@ -186,10 +186,59 @@ SSH is reachable only from `$SSH_ALLOWED_IP`, and key-only. Ports 80 and 443
 are public. If your home IP changes, update the rule:
 `az network nsg rule update -g $RG --nsg-name $NSG -n Allow-SSH --source-address-prefixes <NEW_IP>`.
 
-GitHub-hosted runners have no fixed IP, so a GitHub Actions deploy over SSH
-cannot pass this restriction. Options: temporarily add the runner IP in the
-workflow and remove it afterwards, or use a self-hosted runner. Always use a
-dedicated deploy key, never your personal one.
+GitHub-hosted runners have no fixed IP, so the CD workflows open port 22 to
+the runner's IP only (rule `Allow-GitHub-Deploy`, priority 105) for the
+duration of the deployment and delete it afterwards, even if the deploy
+fails. They log in to Azure with OIDC, so no Azure password is stored in
+GitHub. Use a dedicated deploy key for SSH, never your personal one.
+
+#### 4.4.1 Let GitHub Actions manage that rule (once per environment)
+
+The identity used by the workflow may only change security rules of this
+one NSG. Do not give it Contributor.
+
+```bash
+SUB_ID=$(az account show --query id -o tsv)
+TENANT_ID=$(az account show --query tenantId -o tsv)
+NSG_ID=$(az network nsg show -g $RG -n $NSG --query id -o tsv)
+
+# 1. App registration and service principal
+APP_ID=$(az ad app create --display-name "gha-deploy-$ENV" --query appId -o tsv)
+az ad sp create --id $APP_ID
+
+# 2. Custom role limited to security rules and reading the NSG
+az role definition create --role-definition '{
+  "Name": "Snippet NSG rule deployer",
+  "Description": "Create and delete security rules on an NSG",
+  "Actions": [
+    "Microsoft.Network/networkSecurityGroups/read",
+    "Microsoft.Network/networkSecurityGroups/securityRules/read",
+    "Microsoft.Network/networkSecurityGroups/securityRules/write",
+    "Microsoft.Network/networkSecurityGroups/securityRules/delete",
+    "Microsoft.Network/networkSecurityGroups/join/action"
+  ],
+  "AssignableScopes": ["/subscriptions/'$SUB_ID'"]
+}'   # only once per subscription; skip if it already exists
+
+# 3. Assign it on this NSG only
+az role assignment create --assignee $APP_ID \
+  --role "Snippet NSG rule deployer" --scope $NSG_ID
+
+# 4. Trust the GitHub Environment (no client secret is created)
+az ad app federated-credential create --id $APP_ID --parameters '{
+  "name": "github-'$ENV'",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:<OWNER>/<REPO>:environment:'$ENV'",
+  "audiences": ["api://AzureADTokenExchange"]
+}'
+
+echo "AZURE_CLIENT_ID=$APP_ID AZURE_TENANT_ID=$TENANT_ID AZURE_SUBSCRIPTION_ID=$SUB_ID"
+```
+
+Set these as **variables** (not secrets, they are identifiers) of the GitHub
+Environment `$ENV`: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+`AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP` (`$RG`) and `AZURE_NSG_NAME`
+(`$NSG`).
 
 ### 4.5 Network interface
 
@@ -349,20 +398,18 @@ and refreshes the Nginx service whenever the certificate is renewed.
 The certificate files are managed by Certbot under `/etc/letsencrypt/`.
 Do not manually copy them into the application or infrastructure repositories.
 
-### 8.2 Runtime environment variables
+### 8.2 Docker secrets
 
-The deployment script requires environment variables containing database
-credentials, storage configuration, image names and TLS certificate paths.
-
-Keep these variables in a file outside the Git repository:
+Passwords and keys are Docker secrets, not files. Create them once on the
+manager (values are typed at a hidden prompt):
 
 ```bash
-nano "$HOME/snippet-searcher.env"
+./scripts/create-secrets.sh
 ```
-Restrict access to the file:
-```bash
-chmod 600 "$HOME/snippet-searcher.env"
-```
+
+Non-secret settings (image names, database names, Auth0 domain) are supplied
+as environment variables by the CD workflow; see the CI/CD section of the
+main README.
 
 ## 9. Log in to GitHub Container Registry (inside the VM)
 
@@ -395,19 +442,19 @@ docker context use snippet-$ENV            # make it the default (docker context
 
 ## 11. Next steps
 
-1. Configure the runtime environment variables (section 8.2).
+1. Create the Docker secrets (section 8.2).
 2. Issue the TLS certificate by following the Let's Encrypt instructions in
    [the main README](../README.md).
 3. Authenticate Docker with GHCR (section 9).
-4. Load the runtime environment variables and deploy the stack:
+4. Deploy the stack for the first time by hand, with a self-signed
+   certificate for the bootstrap (see TLS in the main README) and the
+   non-secret variables exported in your shell:
 
 ```bash
-set -a
-source "$HOME/snippet-searcher.env"
-set +a
-
-sudo -E ./scripts/deploy.sh
+sudo -E TLS_CERT_FILE=<cert> TLS_KEY_FILE=<key> ./scripts/deploy.sh
 ```
+Later deployments are done by GitHub Actions.
+
 Verify that all services are running:
 ```bash
 docker stack services snippet-searcher
@@ -416,8 +463,7 @@ All services should report 1/1 replicas.
 
 ## Security notes
 
-- Never commit private keys, tokens, `azure-vm.env` or `snippet-searcher.env`.
-- Keep `snippet-searcher.env` outside the repository with `600` permissions.
+- Never commit private keys, tokens or env files. Application secrets live only in Docker secrets.
 - Never commit TLS private keys or copy them into application repositories.
 - The GHCR token needs only `read:packages`; store it in a password manager.
 - Password login is disabled; SSH is key-only and limited to one IP.
