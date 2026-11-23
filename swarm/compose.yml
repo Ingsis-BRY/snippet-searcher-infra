@@ -3,18 +3,31 @@ x-snippet-service-environment: &snippet-service-environment
   DB_HOST: snippet-service-db
   POSTGRES_DB: "${SERVICE_POSTGRES_DB:?SERVICE_POSTGRES_DB must be set}"
   POSTGRES_USER: "${SERVICE_POSTGRES_USER:?SERVICE_POSTGRES_USER must be set}"
-  POSTGRES_PASSWORD: "${SERVICE_POSTGRES_PASSWORD:?SERVICE_POSTGRES_PASSWORD must be set}"
-  AZURE_STORAGE_CONNECTION_STRING: "${AZURE_STORAGE_CONNECTION_STRING:?AZURE_STORAGE_CONNECTION_STRING must be set}"
   AUTH0_DOMAIN: "${AUTH0_DOMAIN:?AUTH0_DOMAIN must be set}"
   AUTH0_AUDIENCE: "${AUTH0_AUDIENCE:?AUTH0_AUDIENCE must be set}"
   AUTH0_M2M_CLIENT_ID: "${AUTH0_M2M_CLIENT_ID:?AUTH0_M2M_CLIENT_ID must be set}"
-  AUTH0_M2M_CLIENT_SECRET: "${AUTH0_M2M_CLIENT_SECRET:?AUTH0_M2M_CLIENT_SECRET must be set}"
+  SPRING_CONFIG_IMPORT: "configtree:/run/secrets/"
   ENGINE_URL: "http://engine-proxy:80"
   REDIS_HOST: redis
   REDIS_PORT: "6379"
   NEW_RELIC_APP_NAME: "snippet-service"
-  NEW_RELIC_LICENSE_KEY: "${NEW_RELIC_LICENSE_KEY:?NEW_RELIC_LICENSE_KEY must be set}"
   NEW_RELIC_LOG_FILE_NAME: "STDOUT"
+
+# The New Relic agent only reads its license key from the environment, so the entrypoint loads it
+# from the secret file and then starts the same command as the image (WORKDIR /app).
+x-java-entrypoint: &java-entrypoint sh -c >-
+    export NEW_RELIC_LICENSE_KEY="$$(cat /run/secrets/NEW_RELIC_LICENSE_KEY)";
+    exec java -javaagent:/app/newrelic/newrelic.jar -jar app.jar
+
+x-snippet-service-secrets: &snippet-service-secrets
+  - source: service-postgres-password
+    target: POSTGRES_PASSWORD
+  - source: azure-storage-connection-string
+    target: AZURE_STORAGE_CONNECTION_STRING
+  - source: auth0-m2m-client-secret
+    target: AUTH0_M2M_CLIENT_SECRET
+  - source: new-relic-license-key
+    target: NEW_RELIC_LICENSE_KEY
 
 services:
   nginx:
@@ -54,6 +67,8 @@ services:
 
   snippet-service:
     image: "${SNIPPET_SERVICE_IMAGE:?SNIPPET_SERVICE_IMAGE must be set}"
+    entrypoint: *java-entrypoint
+    secrets: *snippet-service-secrets
     environment:
       <<: *snippet-service-environment
       SPRING_PROFILES_ACTIVE: api
@@ -69,6 +84,8 @@ services:
   # it consumes the Redis stream snippet.analysis (lint, format, tests, re-validation).
   snippet-worker:
     image: "${SNIPPET_SERVICE_IMAGE:?SNIPPET_SERVICE_IMAGE must be set}"
+    entrypoint: *java-entrypoint
+    secrets: *snippet-service-secrets
     environment:
       <<: *snippet-service-environment
       SPRING_PROFILES_ACTIVE: worker
@@ -165,7 +182,10 @@ services:
     environment:
       POSTGRES_DB: "${SERVICE_POSTGRES_DB:?SERVICE_POSTGRES_DB must be set}"
       POSTGRES_USER: "${SERVICE_POSTGRES_USER:?SERVICE_POSTGRES_USER must be set}"
-      POSTGRES_PASSWORD: "${SERVICE_POSTGRES_PASSWORD:?SERVICE_POSTGRES_PASSWORD must be set}"
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - source: service-postgres-password
+        target: postgres_password
     volumes:
       - snippet-service-db-data:/var/lib/postgresql/data
     networks:
@@ -180,16 +200,21 @@ services:
 
   snippet-permission-service:
     image: "${PERMISSION_SERVICE_IMAGE:?PERMISSION_SERVICE_IMAGE must be set}"
+    entrypoint: *java-entrypoint
     environment:
       DB_HOST: snippet-permission-db
       POSTGRES_DB: "${PERMISSION_POSTGRES_DB:?PERMISSION_POSTGRES_DB must be set}"
       POSTGRES_USER: "${PERMISSION_POSTGRES_USER:?PERMISSION_POSTGRES_USER must be set}"
-      POSTGRES_PASSWORD: "${PERMISSION_POSTGRES_PASSWORD:?PERMISSION_POSTGRES_PASSWORD must be set}"
+      SPRING_CONFIG_IMPORT: "configtree:/run/secrets/"
       AUTH0_DOMAIN: "${AUTH0_DOMAIN:?AUTH0_DOMAIN must be set}"
       AUTH0_AUDIENCE: "${AUTH0_AUDIENCE:?AUTH0_AUDIENCE must be set}"
       NEW_RELIC_APP_NAME: "snippet-permission-service"
-      NEW_RELIC_LICENSE_KEY: "${NEW_RELIC_LICENSE_KEY:?NEW_RELIC_LICENSE_KEY must be set}"
       NEW_RELIC_LOG_FILE_NAME: "STDOUT"
+    secrets:
+      - source: permission-postgres-password
+        target: POSTGRES_PASSWORD
+      - source: new-relic-license-key
+        target: NEW_RELIC_LICENSE_KEY
     networks:
       - snippet-network
     deploy:
@@ -202,7 +227,10 @@ services:
     environment:
       POSTGRES_DB: "${PERMISSION_POSTGRES_DB:?PERMISSION_POSTGRES_DB must be set}"
       POSTGRES_USER: "${PERMISSION_POSTGRES_USER:?PERMISSION_POSTGRES_USER must be set}"
-      POSTGRES_PASSWORD: "${PERMISSION_POSTGRES_PASSWORD:?PERMISSION_POSTGRES_PASSWORD must be set}"
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - source: permission-postgres-password
+        target: postgres_password
     volumes:
       - snippet-permission-db-data:/var/lib/postgresql/data
     networks:
@@ -244,12 +272,22 @@ configs:
     file: ./nginx/engine-proxy.conf
 
 secrets:
+  service-postgres-password:
+    external: true
+  permission-postgres-password:
+    external: true
+  azure-storage-connection-string:
+    external: true
+  auth0-m2m-client-secret:
+    external: true
+  new-relic-license-key:
+    external: true
   tls-cert:
+    external: true
     name: "tls-cert-${TLS_VERSION:?TLS_VERSION must be set}"
-    file: "${TLS_CERT_FILE:?TLS_CERT_FILE must be set}"
   tls-key:
+    external: true
     name: "tls-key-${TLS_VERSION:?TLS_VERSION must be set}"
-    file: "${TLS_KEY_FILE:?TLS_KEY_FILE must be set}"
 
 networks:
   snippet-network:

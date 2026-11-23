@@ -1,0 +1,124 @@
+name: CD (dev)
+
+on:
+  push:
+    branches: [dev]
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # OIDC login to Azure, no stored Azure password
+
+# Never run two deployments to the same VM at once, and never cancel one in progress.
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 15
+
+    env:
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_NSG_NAME: ${{ vars.AZURE_NSG_NAME }}
+      # Temporary firewall rule, only alive while the deployment runs.
+      NSG_RULE_NAME: Allow-GitHub-Deploy-Dev
+
+    steps:
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # GitHub runners have no fixed IP and SSH is closed to everyone else, so open port 22
+      # to this runner's IP only. The rule is removed in the last step even if the deploy fails.
+      - name: Allow this runner's IP on SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          runner_ip="$(curl -fsS https://api.ipify.org)"
+          
+          if ! python3 -c '
+          import ipaddress
+          import sys
+          
+          try:
+              ipaddress.IPv4Address(sys.argv[1])
+          except ipaddress.AddressValueError:
+              sys.exit(1)
+          ' "$runner_ip"; then
+            echo "Could not determine a valid IPv4 address." >&2
+            exit 1
+          fi
+          az network nsg rule create \
+            --resource-group "$AZURE_RESOURCE_GROUP" --nsg-name "$AZURE_NSG_NAME" \
+            --name "$NSG_RULE_NAME" --priority 105 --direction Inbound --access Allow \
+            --protocol Tcp --destination-port-ranges 22 \
+            --source-address-prefixes "$runner_ip" --output none
+          for _ in $(seq 1 12); do
+            if nc -z -w 5 "$DEPLOY_HOST" 22; then exit 0; fi
+            sleep 5
+          done
+          echo "SSH on the VM is still unreachable after opening the firewall." >&2
+          exit 1
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/deploy_key"
+          chmod 600 "$RUNNER_TEMP/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
+
+      # Only non-secret settings travel from GitHub (environment variables). Passwords and keys are
+      # Docker secrets that already exist on the VM (see scripts/create-secrets.sh).
+      - name: Deploy stack on the dev VM
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          DEPLOY_BRANCH: dev
+          DEPLOY_SHA: ${{ github.sha }}
+          SNIPPET_SERVICE_IMAGE: ${{ vars.SNIPPET_SERVICE_IMAGE }}
+          PERMISSION_SERVICE_IMAGE: ${{ vars.PERMISSION_SERVICE_IMAGE }}
+          PRINTSCRIPT_UI_IMAGE: ${{ vars.PRINTSCRIPT_UI_IMAGE }}
+          PRINTSCRIPT_ENGINE_IMAGE: ${{ vars.PRINTSCRIPT_ENGINE_IMAGE }}
+          SERVICE_POSTGRES_DB: ${{ vars.SERVICE_POSTGRES_DB }}
+          SERVICE_POSTGRES_USER: ${{ vars.SERVICE_POSTGRES_USER }}
+          PERMISSION_POSTGRES_DB: ${{ vars.PERMISSION_POSTGRES_DB }}
+          PERMISSION_POSTGRES_USER: ${{ vars.PERMISSION_POSTGRES_USER }}
+          AUTH0_DOMAIN: ${{ vars.AUTH0_DOMAIN }}
+          AUTH0_AUDIENCE: ${{ vars.AUTH0_AUDIENCE }}
+          AUTH0_M2M_CLIENT_ID: ${{ vars.AUTH0_M2M_CLIENT_ID }}
+        run: |
+          {
+            for var in DEPLOY_PATH DEPLOY_BRANCH DEPLOY_SHA SNIPPET_SERVICE_IMAGE PERMISSION_SERVICE_IMAGE PRINTSCRIPT_UI_IMAGE PRINTSCRIPT_ENGINE_IMAGE SERVICE_POSTGRES_DB SERVICE_POSTGRES_USER PERMISSION_POSTGRES_DB PERMISSION_POSTGRES_USER AUTH0_DOMAIN AUTH0_AUDIENCE AUTH0_M2M_CLIENT_ID; do
+              printf 'export %s=%q\n' "$var" "${!var}"
+            done
+            cat <<'REMOTE'
+          set -euo pipefail
+          cd "$DEPLOY_PATH"
+          git fetch --prune origin "$DEPLOY_BRANCH"
+          git checkout --force --detach "$DEPLOY_SHA"
+          sudo -E scripts/deploy.sh
+          REMOTE
+          } | ssh -i "$RUNNER_TEMP/deploy_key" -o IdentitiesOnly=yes \
+                 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+                 "$DEPLOY_USER@$DEPLOY_HOST" bash -s
+
+      - name: Close SSH to this runner
+        if: always()
+        run: |
+          az network nsg rule delete \
+            --resource-group "$AZURE_RESOURCE_GROUP" --nsg-name "$AZURE_NSG_NAME" \
+            --name "$NSG_RULE_NAME" --output none || true
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/deploy_key"
