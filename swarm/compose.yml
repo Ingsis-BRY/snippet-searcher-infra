@@ -25,7 +25,7 @@ x-java-entrypoint: &java-entrypoint
 x-snippet-service-secrets: &snippet-service-secrets
   - source: service-postgres-password
     target: POSTGRES_PASSWORD
-  - source: azure-storage-connection-string
+  - source: azure-storage-connection-string-v2
     target: azure.storage.connection-string
   - source: auth0-m2m-client-secret
     target: AUTH0_M2M_CLIENT_SECRET
@@ -279,7 +279,7 @@ secrets:
     external: true
   permission-postgres-password:
     external: true
-  azure-storage-connection-string:
+  azure-storage-connection-string-v2:
     external: true
   auth0-m2m-client-secret:
     external: true
