@@ -15,7 +15,10 @@ x-snippet-service-environment: &snippet-service-environment
 
 # The New Relic agent only reads its license key from the environment, so the entrypoint loads it
 # from the secret file and then starts the same command as the image (WORKDIR /app).
-x-java-entrypoint: &java-entrypoint sh -c >-
+x-java-entrypoint: &java-entrypoint
+  - sh
+  - -c
+  - >-
     export NEW_RELIC_LICENSE_KEY="$$(cat /run/secrets/NEW_RELIC_LICENSE_KEY)";
     exec java -javaagent:/app/newrelic/newrelic.jar -jar app.jar
 
