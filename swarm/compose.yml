@@ -26,7 +26,7 @@ x-snippet-service-secrets: &snippet-service-secrets
   - source: service-postgres-password
     target: POSTGRES_PASSWORD
   - source: azure-storage-connection-string
-    target: AZURE_STORAGE_CONNECTION_STRING
+    target: azure.storage.connection-string
   - source: auth0-m2m-client-secret
     target: AUTH0_M2M_CLIENT_SECRET
   - source: new-relic-license-key
