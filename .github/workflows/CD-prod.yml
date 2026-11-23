@@ -5,8 +5,6 @@ on:
     types: [closed]
     branches: [prod]
 
-  workflow_dispatch:
-
 permissions:
   contents: read
   id-token: write # OIDC login to Azure, no stored Azure password
@@ -21,12 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: prod
     if: >
-      github.event_name == 'workflow_dispatch' ||
-       (
-         github.event.pull_request.merged == true &&
-         github.event.pull_request.head.ref == 'dev' &&
-         github.event.pull_request.head.repo.full_name == github.repository
-       )
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.ref == 'dev' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 15
 
     env:
@@ -92,7 +87,7 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
           DEPLOY_BRANCH: prod
-          DEPLOY_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          DEPLOY_SHA: ${{ github.event.pull_request.merge_commit_sha }}
           SNIPPET_SERVICE_IMAGE: ${{ vars.SNIPPET_SERVICE_IMAGE }}
           PERMISSION_SERVICE_IMAGE: ${{ vars.PERMISSION_SERVICE_IMAGE }}
           PRINTSCRIPT_UI_IMAGE: ${{ vars.PRINTSCRIPT_UI_IMAGE }}
