@@ -19,7 +19,7 @@ set -u
 : "${AUTH0_AUDIENCE:?AUTH0_AUDIENCE must be set}"
 : "${SYNTHETIC_CLIENT_ID:?SYNTHETIC_CLIENT_ID must be set}"
 
-CLIENT_SECRET="$(cat /run/secrets/SYNTHETIC_CLIENT_SECRET)"
+CLIENT_SECRET="$(tr -d '[:space:]' < /run/secrets/SYNTHETIC_CLIENT_SECRET)"
 NR_KEY="$(cat /run/secrets/NEW_RELIC_LICENSE_KEY 2>/dev/null || true)"
 BODY=/tmp/synthetic-body
 

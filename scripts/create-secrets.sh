@@ -26,6 +26,10 @@ for name in "${SECRETS[@]}"; do
     fi
     read -r -s -p "Value for $name: " value
     echo
+    # a value pasted from a browser or Windows can carry a trailing  or spaces: drop them
+    value="${value//$''/}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
     if [[ -z "$value" ]]; then
         echo "Error: empty value for $name." >&2
         exit 1
