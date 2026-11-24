@@ -388,10 +388,13 @@ repository clone on the VM), `SNIPPET_SERVICE_IMAGE`,
 `AUTH0_AUDIENCE`, `AUTH0_M2M_CLIENT_ID`, `DOMAIN` (this environment's subdomain) and
 `SYNTHETIC_CLIENT_ID`.
 
-`deploy.sh` does not stop at `docker stack deploy`. Every stateless service has a healthcheck and
-`update_config` with `order: start-first`, `failure_action: rollback` and a 60 s monitor, so Swarm
-starts the new task, waits for it to be healthy and rolls back on its own if it isn't. The script
-then waits (up to `CONVERGE_TIMEOUT`, 600 s) for every service to settle and **fails the
+`deploy.sh` does not stop at `docker stack deploy`. Every stateless service, the engine included, has a
+healthcheck and a **zero-downtime rolling update**: `order: start-first` (the new task starts while the
+old one keeps serving, which stops only once the new one is healthy), one task at a time with 20 s
+between them, a 90 s monitor and `failure_action: rollback`. The engine never drops below its 2
+replicas during a deploy. Start periods are generous (90 s engine, 180 s Spring services) because on a
+small VM several JVMs start at the same time. The script then waits (up to `CONVERGE_TIMEOUT`, 900 s)
+for every service to settle and **fails the
 deployment** if one rolled back or isn't running all its replicas, which marks the GitHub run red.
 To roll back by hand, redeploy an older commit (`workflow_dispatch` on CD-dev) or point the image
 variables at an older `:<sha>` tag.

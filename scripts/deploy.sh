@@ -9,8 +9,9 @@ NGINX_TEMPLATE_FILE="$SCRIPT_DIR/../swarm/nginx/default.conf"
 NGINX_CONFIG_FILE="$SCRIPT_DIR/../swarm/nginx/default.rendered.conf"
 ENGINE_PROXY_CONFIG_FILE="$SCRIPT_DIR/../swarm/nginx/engine-proxy.conf"
 SYNTHETIC_SCRIPT_FILE="$SCRIPT_DIR/../swarm/synthetic/check.sh"
-# How long to wait for every service to finish updating (or roll back) after the deploy.
-CONVERGE_TIMEOUT="${CONVERGE_TIMEOUT:-600}"
+# How long to wait for every service to finish updating (or roll back) after the deploy. Updates go one task
+# at a time with a 90 s monitor each, so a full deploy can take several minutes.
+CONVERGE_TIMEOUT="${CONVERGE_TIMEOUT:-900}"
 
 for var in SNIPPET_SERVICE_IMAGE PERMISSION_SERVICE_IMAGE PRINTSCRIPT_UI_IMAGE PRINTSCRIPT_ENGINE_IMAGE SYNTHETIC_CLIENT_ID; do
     if [[ -z "${!var:-}" ]]; then
