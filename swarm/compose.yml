@@ -15,15 +15,18 @@ x-snippet-service-environment: &snippet-service-environment
 
 # The New Relic agent only reads its license key from the environment, so the entrypoint loads it
 # from the secret file and then starts the same command as the image (WORKDIR /app).
-x-java-entrypoint: &java-entrypoint sh -c >-
+x-java-entrypoint: &java-entrypoint
+  - sh
+  - -c
+  - >-
     export NEW_RELIC_LICENSE_KEY="$$(cat /run/secrets/NEW_RELIC_LICENSE_KEY)";
     exec java -javaagent:/app/newrelic/newrelic.jar -jar app.jar
 
 x-snippet-service-secrets: &snippet-service-secrets
   - source: service-postgres-password
     target: POSTGRES_PASSWORD
-  - source: azure-storage-connection-string
-    target: AZURE_STORAGE_CONNECTION_STRING
+  - source: azure-storage-connection-string-v2
+    target: azure.storage.connection-string
   - source: auth0-m2m-client-secret
     target: AUTH0_M2M_CLIENT_SECRET
   - source: new-relic-license-key
@@ -276,7 +279,7 @@ secrets:
     external: true
   permission-postgres-password:
     external: true
-  azure-storage-connection-string:
+  azure-storage-connection-string-v2:
     external: true
   auth0-m2m-client-secret:
     external: true
