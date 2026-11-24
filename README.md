@@ -421,8 +421,8 @@ Azure identity can only edit security rules of that one NSG; see
   `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`) and the agent forwards them.
 - **Correlation:** Micrometer Tracing gives each request a `traceId` that appears in every log line
   and travels to `snippet-permission-service` and the engine in the W3C `traceparent` header. Jobs
-  sent to the worker through Redis carry it too, so one id follows a request from nginx to the
-  background processing.
+  sent to the worker through Redis carry it too: the worker logs it as `jobTraceId` (its own calls
+  get their own `traceId`), so searching one id finds a change from the API to the background work.
 - **The engine** has no agent: it runs on an internal network with no internet access, by design.
   It is observed through `snippet-service`'s external calls to `engine-proxy` and its JSON logs.
 - **Synthetic check:** the `synthetic-check` service creates, reads and deletes a snippet through
