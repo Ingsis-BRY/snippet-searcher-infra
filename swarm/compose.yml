@@ -105,7 +105,7 @@ services:
         constraints:
           - node.role == manager
       restart_policy:
-        condition: on-failure
+        condition: any
 
   snippet-service:
     image: "${SNIPPET_SERVICE_IMAGE:?SNIPPET_SERVICE_IMAGE must be set}"
@@ -122,7 +122,7 @@ services:
       <<: *rolling-update
       replicas: 1
       restart_policy:
-        condition: on-failure
+        condition: any
 
   # Same image as snippet-service, started with the `worker` profile: no HTTP server,
   # it consumes the Redis stream snippet.analysis (lint, format, tests, re-validation).
@@ -144,7 +144,7 @@ services:
         failure_action: rollback
         monitor: 60s
       restart_policy:
-        condition: on-failure
+        condition: any
 
   redis:
     image: redis:7.4-alpine
@@ -164,7 +164,7 @@ services:
         constraints:
           - node.role == manager
       restart_policy:
-        condition: on-failure
+        condition: any
 
   # The engine runs untrusted code. `docker stack deploy` ignores security_opt
   # (no-new-privileges) and pids limits are not reliably supported on the VM's
@@ -199,7 +199,7 @@ services:
         failure_action: rollback
         monitor: 30s
       restart_policy:
-        condition: on-failure
+        condition: any
 
   # Internal only: snippet-service reaches the engines through it (ENGINE_URL).
   # `server ... resolve` in engine-proxy.conf needs nginx 1.27.3 or later.
@@ -220,7 +220,7 @@ services:
       <<: *rolling-update
       replicas: 1
       restart_policy:
-        condition: on-failure
+        condition: any
 
   printscript-ui:
     image: "${PRINTSCRIPT_UI_IMAGE:?PRINTSCRIPT_UI_IMAGE must be set}"
@@ -235,7 +235,7 @@ services:
       <<: *rolling-update
       replicas: 1
       restart_policy:
-        condition: on-failure
+        condition: any
 
   snippet-service-db:
     image: postgres:17
@@ -257,7 +257,7 @@ services:
         constraints:
           - node.role == manager
       restart_policy:
-        condition: on-failure
+        condition: any
 
   snippet-permission-service:
     image: "${PERMISSION_SERVICE_IMAGE:?PERMISSION_SERVICE_IMAGE must be set}"
@@ -284,7 +284,7 @@ services:
       <<: *rolling-update
       replicas: 1
       restart_policy:
-        condition: on-failure
+        condition: any
 
   snippet-permission-db:
     image: postgres:17
@@ -306,7 +306,7 @@ services:
         constraints:
           - node.role == manager
       restart_policy:
-        condition: on-failure
+        condition: any
 
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite
@@ -326,7 +326,7 @@ services:
         constraints:
           - node.role == manager
       restart_policy:
-        condition: on-failure
+        condition: any
 
   # Create, read and delete a snippet through the API every minute; results go to New Relic
   # (metrics snippet_searcher.synthetic.*) and to this service's logs. See swarm/synthetic/check.sh.
