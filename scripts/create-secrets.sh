@@ -8,9 +8,10 @@ set -euo pipefail
 SECRETS=(
     service-postgres-password
     permission-postgres-password
-    azure-storage-connection-string
+    azure-storage-connection-string-v2
     auth0-m2m-client-secret
     new-relic-license-key
+    synthetic-client-secret
 )
 
 if ! docker info --format '{{.Swarm.LocalNodeState}}' | grep -q '^active$'; then
