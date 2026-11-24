@@ -16,6 +16,10 @@
 #   3. API latency                  p95 of snippet-service transactions above 2 s, for 5 minutes
 #   4. Background processing        worker logs more than 5 ERROR lines in 5 minutes
 
+# The GraphQL documents below use NerdGraph variables ($account, $name, ...) inside single quotes on
+# purpose: the shell must not expand them, jq passes their values separately.
+# shellcheck disable=SC2016
+
 set -euo pipefail
 
 ENVIRONMENT="${1:-}"
