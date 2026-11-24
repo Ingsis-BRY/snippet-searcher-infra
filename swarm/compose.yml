@@ -1,4 +1,6 @@
 # Shared by snippet-service (profile api) and snippet-worker (profile worker).
+# New Relic app names carry the environment (snippet-service-dev, snippet-service-prod) so the two
+# environments never mix in one APM entity; the alert policies (scripts/newrelic-alerts.sh) use them.
 x-snippet-service-environment: &snippet-service-environment
   DB_HOST: snippet-service-db
   POSTGRES_DB: "${SERVICE_POSTGRES_DB:?SERVICE_POSTGRES_DB must be set}"
@@ -10,8 +12,39 @@ x-snippet-service-environment: &snippet-service-environment
   ENGINE_URL: "http://engine-proxy:80"
   REDIS_HOST: redis
   REDIS_PORT: "6379"
-  NEW_RELIC_APP_NAME: "snippet-service"
+  NEW_RELIC_APP_NAME: "snippet-service-${DEPLOY_ENVIRONMENT:-dev}"
   NEW_RELIC_LOG_FILE_NAME: "STDOUT"
+  # one JSON object per log line (Elastic Common Schema), with traceId/spanId from Micrometer Tracing
+  LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
+
+# Rolling updates for stateless services: start the new task first, watch it for a minute and roll
+# back on its own if it fails its healthcheck or exits. deploy.sh then waits for every service to settle.
+x-rolling-update: &rolling-update
+  update_config:
+    parallelism: 1
+    delay: 10s
+    order: start-first
+    failure_action: rollback
+    monitor: 60s
+  rollback_config:
+    parallelism: 1
+    order: start-first
+
+# Spring services answer /actuator/health/readiness once the context is up (DB, Redis, ...).
+# start_period covers JVM start plus the New Relic agent.
+x-spring-healthcheck: &spring-healthcheck
+  test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health/readiness"]
+  interval: 15s
+  timeout: 5s
+  retries: 5
+  start_period: 120s
+
+x-postgres-healthcheck: &postgres-healthcheck
+  test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+  interval: 10s
+  timeout: 5s
+  retries: 5
+  start_period: 30s
 
 # The New Relic agent only reads its license key from the environment, so the entrypoint loads it
 # from the secret file and then starts the same command as the image (WORKDIR /app).
@@ -58,15 +91,21 @@ services:
         source: /var/www/certbot
         target: /var/www/certbot
         read_only: true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/nginx-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
     networks:
       - snippet-network
     deploy:
+      <<: *rolling-update
       replicas: 1
       placement:
         constraints:
           - node.role == manager
       restart_policy:
-        condition: on-failure
+        condition: any
 
   snippet-service:
     image: "${SNIPPET_SERVICE_IMAGE:?SNIPPET_SERVICE_IMAGE must be set}"
@@ -75,13 +114,15 @@ services:
     environment:
       <<: *snippet-service-environment
       SPRING_PROFILES_ACTIVE: api
-      NEW_RELIC_APP_NAME: "snippet-service"
+      NEW_RELIC_APP_NAME: "snippet-service-${DEPLOY_ENVIRONMENT:-dev}"
+    healthcheck: *spring-healthcheck
     networks:
       - snippet-network
     deploy:
+      <<: *rolling-update
       replicas: 1
       restart_policy:
-        condition: on-failure
+        condition: any
 
   # Same image as snippet-service, started with the `worker` profile: no HTTP server,
   # it consumes the Redis stream snippet.analysis (lint, format, tests, re-validation).
@@ -92,14 +133,18 @@ services:
     environment:
       <<: *snippet-service-environment
       SPRING_PROFILES_ACTIVE: worker
-      NEW_RELIC_APP_NAME: "snippet-worker"
+      NEW_RELIC_APP_NAME: "snippet-worker-${DEPLOY_ENVIRONMENT:-dev}"
     networks:
       - snippet-network
     stop_grace_period: 30s
     deploy:
       replicas: 1
+      update_config:
+        order: stop-first
+        failure_action: rollback
+        monitor: 60s
       restart_policy:
-        condition: on-failure
+        condition: any
 
   redis:
     image: redis:7.4-alpine
@@ -119,7 +164,7 @@ services:
         constraints:
           - node.role == manager
       restart_policy:
-        condition: on-failure
+        condition: any
 
   # The engine runs untrusted code. `docker stack deploy` ignores security_opt
   # (no-new-privileges) and pids limits are not reliably supported on the VM's
@@ -127,6 +172,8 @@ services:
   # ExitOnOutOfMemoryError, the memory/CPU limits and the restart policy below.
   printscript-engine:
     image: "${PRINTSCRIPT_ENGINE_IMAGE:?PRINTSCRIPT_ENGINE_IMAGE must be set}"
+    environment:
+      LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
     read_only: true
     cap_drop:
       - ALL
@@ -145,11 +192,14 @@ services:
         limits:
           cpus: "1"
           memory: 512M
+      # the image's own HEALTHCHECK (actuator) gates each replica
       update_config:
         parallelism: 1
         delay: 10s
+        failure_action: rollback
+        monitor: 30s
       restart_policy:
-        condition: on-failure
+        condition: any
 
   # Internal only: snippet-service reaches the engines through it (ENGINE_URL).
   # `server ... resolve` in engine-proxy.conf needs nginx 1.27.3 or later.
@@ -167,18 +217,25 @@ services:
       - engine-network
       - snippet-network
     deploy:
+      <<: *rolling-update
       replicas: 1
       restart_policy:
-        condition: on-failure
+        condition: any
 
   printscript-ui:
     image: "${PRINTSCRIPT_UI_IMAGE:?PRINTSCRIPT_UI_IMAGE must be set}"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
     networks:
       - snippet-network
     deploy:
+      <<: *rolling-update
       replicas: 1
       restart_policy:
-        condition: on-failure
+        condition: any
 
   snippet-service-db:
     image: postgres:17
@@ -189,6 +246,7 @@ services:
     secrets:
       - source: service-postgres-password
         target: postgres_password
+    healthcheck: *postgres-healthcheck
     volumes:
       - snippet-service-db-data:/var/lib/postgresql/data
     networks:
@@ -199,7 +257,7 @@ services:
         constraints:
           - node.role == manager
       restart_policy:
-        condition: on-failure
+        condition: any
 
   snippet-permission-service:
     image: "${PERMISSION_SERVICE_IMAGE:?PERMISSION_SERVICE_IMAGE must be set}"
@@ -211,8 +269,10 @@ services:
       SPRING_CONFIG_IMPORT: "configtree:/run/secrets/"
       AUTH0_DOMAIN: "${AUTH0_DOMAIN:?AUTH0_DOMAIN must be set}"
       AUTH0_AUDIENCE: "${AUTH0_AUDIENCE:?AUTH0_AUDIENCE must be set}"
-      NEW_RELIC_APP_NAME: "snippet-permission-service"
+      NEW_RELIC_APP_NAME: "snippet-permission-service-${DEPLOY_ENVIRONMENT:-dev}"
       NEW_RELIC_LOG_FILE_NAME: "STDOUT"
+      LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
+    healthcheck: *spring-healthcheck
     secrets:
       - source: permission-postgres-password
         target: POSTGRES_PASSWORD
@@ -221,9 +281,10 @@ services:
     networks:
       - snippet-network
     deploy:
+      <<: *rolling-update
       replicas: 1
       restart_policy:
-        condition: on-failure
+        condition: any
 
   snippet-permission-db:
     image: postgres:17
@@ -234,6 +295,7 @@ services:
     secrets:
       - source: permission-postgres-password
         target: postgres_password
+    healthcheck: *postgres-healthcheck
     volumes:
       - snippet-permission-db-data:/var/lib/postgresql/data
     networks:
@@ -244,7 +306,7 @@ services:
         constraints:
           - node.role == manager
       restart_policy:
-        condition: on-failure
+        condition: any
 
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite
@@ -264,15 +326,47 @@ services:
         constraints:
           - node.role == manager
       restart_policy:
-        condition: on-failure
+        condition: any
+
+  # Create, read and delete a snippet through the API every minute; results go to New Relic
+  # (metrics snippet_searcher.synthetic.*) and to this service's logs. See swarm/synthetic/check.sh.
+  synthetic-check:
+    image: alpine:3.20
+    command: ["sh", "-c", "apk add --no-cache curl jq >/dev/null && exec sh /synthetic/check.sh"]
+    configs:
+      - source: synthetic-check-script
+        target: /synthetic/check.sh
+    environment:
+      BASE_URL: "http://snippet-service:8080"
+      CHECK_INTERVAL: "60"
+      CHECK_ENVIRONMENT: "${DEPLOY_ENVIRONMENT:-unknown}"
+      AUTH0_DOMAIN: "${AUTH0_DOMAIN:?AUTH0_DOMAIN must be set}"
+      AUTH0_AUDIENCE: "${AUTH0_AUDIENCE:?AUTH0_AUDIENCE must be set}"
+      SYNTHETIC_CLIENT_ID: "${SYNTHETIC_CLIENT_ID:?SYNTHETIC_CLIENT_ID must be set}"
+    secrets:
+      - source: synthetic-client-secret
+        target: SYNTHETIC_CLIENT_SECRET
+      - source: new-relic-license-key
+        target: NEW_RELIC_LICENSE_KEY
+    networks:
+      - snippet-network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 30s
 
 configs:
   nginx-config:
     name: "nginx-config-${NGINX_CONFIG_VERSION:?NGINX_CONFIG_VERSION must be set}"
-    file: ./nginx/default.conf
+    # rendered by scripts/deploy.sh from nginx/default.conf with this environment's DOMAIN
+    file: ./nginx/default.rendered.conf
   engine-proxy-config:
     name: "engine-proxy-config-${ENGINE_PROXY_CONFIG_VERSION:?ENGINE_PROXY_CONFIG_VERSION must be set}"
     file: ./nginx/engine-proxy.conf
+  synthetic-check-script:
+    name: "synthetic-check-script-${SYNTHETIC_SCRIPT_VERSION:?SYNTHETIC_SCRIPT_VERSION must be set}"
+    file: ./synthetic/check.sh
 
 secrets:
   service-postgres-password:
@@ -284,6 +378,8 @@ secrets:
   auth0-m2m-client-secret:
     external: true
   new-relic-license-key:
+    external: true
+  synthetic-client-secret:
     external: true
   tls-cert:
     external: true

@@ -5,10 +5,14 @@ set -euo pipefail
 STACK_NAME="snippet-searcher"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/../swarm/compose.yml"
-NGINX_CONFIG_FILE="$SCRIPT_DIR/../swarm/nginx/default.conf"
+NGINX_TEMPLATE_FILE="$SCRIPT_DIR/../swarm/nginx/default.conf"
+NGINX_CONFIG_FILE="$SCRIPT_DIR/../swarm/nginx/default.rendered.conf"
 ENGINE_PROXY_CONFIG_FILE="$SCRIPT_DIR/../swarm/nginx/engine-proxy.conf"
+SYNTHETIC_SCRIPT_FILE="$SCRIPT_DIR/../swarm/synthetic/check.sh"
+# How long to wait for every service to finish updating (or roll back) after the deploy.
+CONVERGE_TIMEOUT="${CONVERGE_TIMEOUT:-600}"
 
-for var in SNIPPET_SERVICE_IMAGE PERMISSION_SERVICE_IMAGE PRINTSCRIPT_UI_IMAGE PRINTSCRIPT_ENGINE_IMAGE; do
+for var in SNIPPET_SERVICE_IMAGE PERMISSION_SERVICE_IMAGE PRINTSCRIPT_UI_IMAGE PRINTSCRIPT_ENGINE_IMAGE SYNTHETIC_CLIENT_ID; do
     if [[ -z "${!var:-}" ]]; then
         echo "Error: $var is not set." >&2
         exit 1
@@ -18,9 +22,10 @@ done
 REQUIRED_SECRETS=(
     service-postgres-password
     permission-postgres-password
-    azure-storage-connection-string
+    azure-storage-connection-string-v2
     auth0-m2m-client-secret
     new-relic-license-key
+    synthetic-client-secret
 )
 
 if ! docker info --format '{{.Swarm.LocalNodeState}}' | grep -q '^active$'; then
@@ -28,8 +33,23 @@ if ! docker info --format '{{.Swarm.LocalNodeState}}' | grep -q '^active$'; then
     exit 1
 fi
 
+# Each environment has its own DuckDNS subdomain (and certificate). nginx's own $variables are left alone:
+# only the literal ${DOMAIN} placeholder is replaced.
+if [[ -z "${DOMAIN:-}" ]]; then
+    DOMAIN="snippet-searcher-bry.duckdns.org"
+    echo "Warning: DOMAIN is not set, using $DOMAIN. Set the DOMAIN variable of this GitHub environment." >&2
+fi
+if [[ ! "$DOMAIN" =~ ^[a-z0-9.-]+$ ]]; then
+    echo "Error: DOMAIN must be a plain host name, got '$DOMAIN'." >&2
+    exit 1
+fi
+sed "s/\${DOMAIN}/$DOMAIN/g" "$NGINX_TEMPLATE_FILE" > "$NGINX_CONFIG_FILE"
+
 NGINX_CONFIG_VERSION="$(sha256sum "$NGINX_CONFIG_FILE" | cut -c1-12)"
 export NGINX_CONFIG_VERSION
+
+SYNTHETIC_SCRIPT_VERSION="$(sha256sum "$SYNTHETIC_SCRIPT_FILE" | cut -c1-12)"
+export SYNTHETIC_SCRIPT_VERSION
 
 ENGINE_PROXY_CONFIG_VERSION="$(sha256sum "$ENGINE_PROXY_CONFIG_FILE" | cut -c1-12)"
 export ENGINE_PROXY_CONFIG_VERSION
@@ -78,4 +98,41 @@ docker stack deploy \
     -c "$COMPOSE_FILE" \
     "$STACK_NAME"
 
-echo "Deployed. Follow the background worker with: docker service logs snippet-searcher_snippet-worker"
+# Swarm rolls a service back on its own when its new task fails the healthcheck (update_config
+# failure_action: rollback). Wait until every service has settled and fail the deploy if any of
+# them rolled back or is not running all its replicas.
+echo "Waiting up to ${CONVERGE_TIMEOUT}s for the services to settle..."
+deadline=$(( $(date +%s) + CONVERGE_TIMEOUT ))
+while true; do
+    pending=()
+    rolled_back=()
+    while read -r name; do
+        state="$(docker service inspect "$name" --format '{{if .UpdateStatus}}{{.UpdateStatus.State}}{{end}}')"
+        case "$state" in
+            rollback_*) rolled_back+=("$name ($state)") ;;
+            updating) pending+=("$name (updating)") ;;
+        esac
+        desired="$(docker service inspect "$name" --format '{{if .Spec.Mode.Replicated}}{{.Spec.Mode.Replicated.Replicas}}{{end}}')"
+        running="$(docker service ps "$name" --filter desired-state=running --format '{{.CurrentState}}' | grep -c '^Running' || true)"
+        if [[ -n "$desired" && "$running" != "$desired" ]]; then
+            pending+=("$name ($running/$desired running)")
+        fi
+    done < <(docker stack services "$STACK_NAME" --format '{{.Name}}')
+
+    if [[ ${#rolled_back[@]} -gt 0 ]]; then
+        echo "Error: these services failed their update and rolled back: ${rolled_back[*]}" >&2
+        echo "See: docker service ps --no-trunc <service> and docker service logs <service>" >&2
+        exit 1
+    fi
+    if [[ ${#pending[@]} -eq 0 ]]; then
+        break
+    fi
+    if [[ $(date +%s) -ge $deadline ]]; then
+        echo "Error: services did not settle in ${CONVERGE_TIMEOUT}s: ${pending[*]}" >&2
+        exit 1
+    fi
+    sleep 10
+done
+
+docker stack services "$STACK_NAME"
+echo "Deployed to $DOMAIN. Follow the background worker with: docker service logs ${STACK_NAME}_snippet-worker"
