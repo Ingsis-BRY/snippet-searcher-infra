@@ -477,7 +477,7 @@ Setup, once per machine:
 ```bash
 python -m venv load/.venv
 load/.venv/bin/pip install -r load/requirements.txt      # Windows: load\.venv\Scripts\pip
-# the M2M application's client secret, one line (git-ignored); or export SYNTHETIC_CLIENT_SECRET
+# put the M2M application's client secret in load/client_secret, one line (git-ignored), or export SYNTHETIC_CLIENT_SECRET
 ```
 
 Run (web UI on http://localhost:8089):
