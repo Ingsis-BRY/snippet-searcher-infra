@@ -8,10 +8,9 @@ set -euo pipefail
 SECRETS=(
     service-postgres-password
     permission-postgres-password
-    azure-storage-connection-string-v2
+    azure-storage-connection-string
     auth0-m2m-client-secret
     new-relic-license-key
-    synthetic-client-secret
 )
 
 if ! docker info --format '{{.Swarm.LocalNodeState}}' | grep -q '^active$'; then
@@ -26,10 +25,6 @@ for name in "${SECRETS[@]}"; do
     fi
     read -r -s -p "Value for $name: " value
     echo
-    # a value pasted from a browser or Windows can carry a trailing CR or spaces: drop them
-    value="${value//$'\r'/}"
-    value="${value#"${value%%[![:space:]]*}"}"
-    value="${value%"${value##*[![:space:]]}"}"
     if [[ -z "$value" ]]; then
         echo "Error: empty value for $name." >&2
         exit 1

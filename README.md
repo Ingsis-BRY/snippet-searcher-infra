@@ -80,25 +80,19 @@ routing mesh. Port `80` redirects every request to HTTPS, except
 - `/api/*` to `snippet-service:8080`, with the `/api` prefix removed.
 - everything else to `printscript-ui:80`.
 
-The UI is a static build that calls the API on its own origin (`/api`), so the same image
-serves every environment. Only its Auth0 settings (`VITE_AUTH0_DOMAIN`, `VITE_AUTH0_CLIENT_ID`,
-`VITE_AUTH0_AUDIENCE`) are baked in, and they are the same tenant everywhere. The
-`printscript-ui` service has no published ports.
+The UI is a static build: 
+- `VITE_API_BASE_URL`, `VITE_AUTH0_DOMAIN` and`VITE_AUTH0_CLIENT_ID` are baked into its image at build time
+- `VITE_API_BASE_URL` must be `https://<domain>/api`. 
+- The `printscript-ui`service has no published ports.
 
-Each environment has its own DuckDNS subdomain and certificate. `swarm/nginx/default.conf` is a
-template with a `${DOMAIN}` placeholder in `server_name`; `scripts/deploy.sh` renders it with the
-environment's `DOMAIN` into `swarm/nginx/default.rendered.conf` (git-ignored) and delivers that to
-the container as a Swarm config. Only the literal `${DOMAIN}` is replaced, so nginx's own
-`$variables` are untouched.
+Nginx configuration lives in `swarm/nginx/default.conf` and is delivered to the container as a
+Swarm config.
 
-Swarm configs are immutable, so the config name includes a hash of the rendered file
-(`NGINX_CONFIG_VERSION`), computed by `scripts/deploy.sh`. Changing the file or the domain produces
-a new config and Nginx is redeployed with it.
+Swarm configs are immutable, so the config name includes a hash of the
+file (`NGINX_CONFIG_VERSION`), computed by `scripts/deploy.sh`. Changing
+the file produces a new config and Nginx is redeployed with it.
 
-Nginx writes one JSON line per request (`request_id`, status, timings, `traceparent`) and forwards
-its `$request_id` upstream as `X-Request-Id`.
-
-- Only Nginx publishes ports in the Swarm stack.
+- Only Nginx publishes ports in the Swarm stack. 
 - The other services, including `snippet-permission-service`, are reachable only inside the
 `snippet-network` overlay network.
 
@@ -266,11 +260,7 @@ to the shell history). `swarm/compose.yml` declares them as `external` and
 |---|---|---|---|
 | `service-postgres-password` | `snippet-service`, `snippet-worker`, `snippet-service-db` | `POSTGRES_PASSWORD` / `postgres_password` | Snippet service database password |
 | `permission-postgres-password` | `snippet-permission-service`, `snippet-permission-db` | `POSTGRES_PASSWORD` / `postgres_password` | Permission database password |
-| `azure-storage-connection-string-v2` | `snippet-service`, `snippet-worker` | `azure.storage.connection-string` | Azure Blob (Azurite) connection string |
-| `auth0-m2m-client-secret` | `snippet-service`, `snippet-worker` | `AUTH0_M2M_CLIENT_SECRET` | Secret of the Auth0 Management API M2M application (user search) |
-| `new-relic-license-key` | `snippet-service`, `snippet-worker`, `snippet-permission-service`, `synthetic-check` | `NEW_RELIC_LICENSE_KEY` | New Relic ingest license key |
-| `synthetic-client-secret` | `synthetic-check` | `SYNTHETIC_CLIENT_SECRET` | Secret of the Auth0 M2M application the synthetic check logs in with |
-
+| `azure-storage-connection-string` | `snippet-service`, `snippet-worker` | `auth0-m2m-client-secret` | `snippet-service`, `snippet-worker` | `new-relic-license-key` | `snippet-service`, `snippet-worker`, `snippet-permission-service` 
 The Spring services read them through `SPRING_CONFIG_IMPORT=configtree:/run/secrets/`:
 each file is named after the placeholder in `application.yml`, so the
 applications need no change. The New Relic agent only reads environment
@@ -305,17 +295,13 @@ supplied at deploy time; in GitHub Actions they are the `vars` of the
 | `AUTH0_DOMAIN` | `snippet-service`, `snippet-permission-service` | Auth0 tenant domain |
 | `AUTH0_AUDIENCE` | `snippet-service`, `snippet-permission-service` | Auth0 API identifier |
 | `AUTH0_M2M_CLIENT_ID` | `snippet-service` | Auth0 Management API M2M client ID |
-| `DOMAIN` | `nginx` (rendered by `deploy.sh`) | This environment's public host: `snippet-searcher-bry.duckdns.org` (dev), `snippet-searcher-prod.duckdns.org` (prod). Defaults to `snippet-searcher-bry.duckdns.org` with a warning |
-| `DEPLOY_ENVIRONMENT` | New Relic app names, `synthetic-check` | `dev` or `prod`; set by the CD workflow |
-| `SYNTHETIC_CLIENT_ID` | `synthetic-check` | Client ID of the Auth0 M2M application authorized for the API (`read:snippets`, `write:snippets`) |
-| `SYNTHETIC_SCRIPT_VERSION` | `synthetic-check` | Computed by `scripts/deploy.sh`; do not set manually |
 | `NGINX_CONFIG_VERSION` | `nginx` | Computed by `scripts/deploy.sh`; do not set manually |
 | `ENGINE_PROXY_CONFIG_VERSION` | `engine-proxy` | Computed by `scripts/deploy.sh`; do not set manually |
 | `TLS_VERSION` | `nginx` | Computed by `scripts/deploy.sh`; do not set manually |
 
 The UI is a static build, so its Auth0 settings (`VITE_AUTH0_DOMAIN`,
-`VITE_AUTH0_CLIENT_ID`, `VITE_AUTH0_AUDIENCE`) are set when its image is built, not here. It needs
-no API URL: it calls `/api` on whatever domain serves it. The public URL of each environment
+`VITE_AUTH0_CLIENT_ID`, `VITE_AUTH0_AUDIENCE`) and `VITE_API_BASE_URL` are
+set when its image is built, not here. The public URL of each environment
 (`https://<domain>`) must be added to the Allowed Callback URLs, Allowed
 Logout URLs and Allowed Web Origins of the `Snippet Searcher UI`
 application in Auth0.
@@ -385,19 +371,7 @@ repository clone on the VM), `SNIPPET_SERVICE_IMAGE`,
 `PERMISSION_SERVICE_IMAGE`, `PRINTSCRIPT_UI_IMAGE`,
 `PRINTSCRIPT_ENGINE_IMAGE`, `SERVICE_POSTGRES_DB`, `SERVICE_POSTGRES_USER`,
 `PERMISSION_POSTGRES_DB`, `PERMISSION_POSTGRES_USER`, `AUTH0_DOMAIN`,
-`AUTH0_AUDIENCE`, `AUTH0_M2M_CLIENT_ID`, `DOMAIN` (this environment's subdomain) and
-`SYNTHETIC_CLIENT_ID`.
-
-`deploy.sh` does not stop at `docker stack deploy`. Every stateless service has a healthcheck and
-`update_config` with `order: start-first`, `failure_action: rollback` and a 60 s monitor, so Swarm
-starts the new task, waits for it to be healthy and rolls back on its own if it isn't. The script
-then waits (up to `CONVERGE_TIMEOUT`, 600 s) for every service to settle and **fails the
-deployment** if one rolled back or isn't running all its replicas, which marks the GitHub run red.
-To roll back by hand, redeploy an older commit (`workflow_dispatch` on CD-dev) or point the image
-variables at an older `:<sha>` tag.
-
-Order matters when a change spans repositories: merge and publish the service images first, then
-the infra change that depends on them (for example, healthchecks need images with `/actuator/health`).
+`AUTH0_AUDIENCE` and `AUTH0_M2M_CLIENT_ID`.
 
 Before the first automated deployment, on each VM: clone this repository at
 `DEPLOY_PATH`, run `scripts/create-secrets.sh`, and do the first deployment
@@ -406,49 +380,12 @@ passwordless `sudo`.
 
 GitHub-hosted runners have no fixed IP and SSH is closed to everyone but
 the administrator. Each workflow logs in to Azure with OIDC, creates a
-temporary NSG rule (`Allow-GitHub-Deploy-Dev` / `Allow-GitHub-Deploy-Prod`) allowing port 22 from the runner's
+temporary NSG rule (`Allow-GitHub-Deploy`) allowing port 22 from the runner's
 IP only, deploys, and deletes the rule in a final step that always runs. The
 Azure identity can only edit security rules of that one NSG; see
 `docs/azure-vm-setup.md`, section 4.4.1. Add the environment variables
 `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`,
 `AZURE_RESOURCE_GROUP` and `AZURE_NSG_NAME`.
-
-## Observability
-
-- **APM and logs:** the New Relic Java agent runs in `snippet-service`, `snippet-worker` and
-  `snippet-permission-service`, with app names suffixed by environment (`snippet-service-dev`,
-  `snippet-service-prod`, ...). Their logs go to stdout as JSON (Elastic Common Schema,
-  `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`) and the agent forwards them.
-- **Correlation:** Micrometer Tracing gives each request a `traceId` that appears in every log line
-  and travels to `snippet-permission-service` and the engine in the W3C `traceparent` header. Jobs
-  sent to the worker through Redis carry it too: the worker logs it as `jobTraceId` (its own calls
-  get their own `traceId`), so searching one id finds a change from the API to the background work.
-- **The engine** has no agent: it runs on an internal network with no internet access, by design.
-  It is observed through `snippet-service`'s external calls to `engine-proxy` and its JSON logs.
-- **Synthetic check:** the `synthetic-check` service creates, reads and deletes a snippet through
-  the API every minute, logged in as an Auth0 machine-to-machine application, and sends
-  `snippet_searcher.synthetic.success` and `snippet_searcher.synthetic.duration_ms` to New Relic
-  (`swarm/synthetic/check.sh`).
-- **Alerts:** `scripts/newrelic-alerts.sh dev|prod` creates the policy *Snippet Searcher (env)*
-  through NerdGraph, with `NEW_RELIC_API_KEY` (a user key) and `NEW_RELIC_ACCOUNT_ID` in the
-  environment. Conditions: synthetic check failing or silent, API error rate above 5 %, API p95
-  latency above 2 s, worker errors. Notifications are attached in New Relic (Alerts > Workflows).
-
-### Service level objectives
-
-| SLO | Target | Measured by |
-|---|---|---|
-| Availability | 99 % of synthetic checks succeed over 7 days | `snippet_searcher.synthetic.success` |
-| Latency | p95 of API requests under 1 s (alert at 2 s) | `Transaction` duration of `snippet-service-<env>` |
-| Background processing | No job stays pending more than 10 min (then the sweeper requeues it) | worker logs, DLQ length |
-
-### Setting up the synthetic check (once per environment)
-
-1. In Auth0, create a **Machine to Machine** application, authorize it for the
-   `https://snippet-searcher-api` API with `read:snippets` and `write:snippets`.
-2. Add its client ID as the `SYNTHETIC_CLIENT_ID` variable of the GitHub environment.
-3. On the VM, run `scripts/create-secrets.sh` and paste its client secret for
-   `synthetic-client-secret` (existing secrets are skipped).
 
 ## Repository Structure
 
@@ -464,17 +401,14 @@ Azure identity can only edit security rules of that one NSG; see
 │   └── azure-vm.env.example
 ├── swarm/
 │   ├── nginx/
-│   │   ├── default.conf          (template: ${DOMAIN})
+│   │   ├── default.conf
 │   │   └── engine-proxy.conf
-│   ├── synthetic/
-│   │   └── check.sh
 │   └── compose.yml
 ├── scripts/
 │   ├── certbot-deploy-hook.sh
 │   ├── certbot-init.sh
 │   ├── create-secrets.sh
-│   ├── deploy.sh
-│   └── newrelic-alerts.sh
+│   └── deploy.sh
 ├── .gitattributes
 ├── .gitignore
 └── README.md

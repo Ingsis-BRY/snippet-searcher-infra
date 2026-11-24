@@ -66,4 +66,3 @@ id_ed25519*
 id_ecdsa*
 !*.pub
 .azure/
-swarm/nginx/default.rendered.conf

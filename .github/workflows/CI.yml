@@ -21,14 +21,10 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Validate script syntax
-        run: for script in scripts/*.sh; do bash -n "$script"; done && sh -n swarm/synthetic/check.sh
+        run: for script in scripts/*.sh; do bash -n "$script"; done
 
       - name: Lint scripts
-        run: docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:v0.10.0 scripts/*.sh swarm/synthetic/check.sh
-
-      # deploy.sh does the same with each environment's DOMAIN
-      - name: Render nginx configuration
-        run: sed 's/${DOMAIN}/ci.example.org/g' swarm/nginx/default.conf > swarm/nginx/default.rendered.conf
+        run: docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:v0.10.0 scripts/*.sh
 
       - name: Generate test TLS certificate
         run: >
@@ -42,8 +38,6 @@ jobs:
         env:
           SNIPPET_SERVICE_IMAGE: ghcr.io/ingsis-bry/snippet-service:latest
           NGINX_CONFIG_VERSION: ci-placeholder
-          SYNTHETIC_SCRIPT_VERSION: ci-placeholder
-          SYNTHETIC_CLIENT_ID: ci-placeholder
           TLS_VERSION: ci-placeholder
           SERVICE_POSTGRES_DB: ci-placeholder
           SERVICE_POSTGRES_USER: ci-placeholder
@@ -60,7 +54,7 @@ jobs:
       - name: Validate Nginx configuration
         run: >
           docker run --rm
-          -v "$PWD/swarm/nginx/default.rendered.conf:/etc/nginx/conf.d/default.conf:ro"
+          -v "$PWD/swarm/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro"
           -v /tmp/tls:/run/secrets:ro
           nginx:1.28-alpine nginx -t
 
