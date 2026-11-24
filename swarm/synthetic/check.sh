@@ -3,6 +3,11 @@
 # like a user would, and report the result to New Relic as metrics:
 #   snippet_searcher.synthetic.success      1 when every step passed, 0 otherwise
 #   snippet_searcher.synthetic.duration_ms  total time of the three calls
+# Between the read and the delete it also runs the edge check (edge-check.mjs) through PUBLIC_URL, the
+# environment's public domain: HTTPS through nginx and a full interactive run over the WebSocket.
+#   snippet_searcher.synthetic.edge_success      1 when the run printed "synthetic", 0 otherwise
+#   snippet_searcher.synthetic.edge_duration_ms  HTTPS GET + WebSocket run
+# The edge result is reported on its own: it never changes snippet_searcher.synthetic.success.
 # Each run also prints one JSON line to stdout (`docker service logs snippet-searcher_synthetic-check`).
 #
 # It authenticates as an Auth0 machine-to-machine application authorized for the API
@@ -11,6 +16,7 @@
 set -u
 
 : "${BASE_URL:=http://snippet-service:8080}"
+: "${PUBLIC_URL:=}"
 : "${CHECK_INTERVAL:=60}"
 : "${CHECK_ENVIRONMENT:=unknown}"
 : "${LANGUAGE_VERSION:=1.1}"
@@ -41,6 +47,29 @@ report() { # success(0|1) duration_ms failed_step
     curl -sS -o /dev/null --max-time 10 -X POST "$NEW_RELIC_METRIC_API" \
         -H "Api-Key: $NR_KEY" -H 'Content-Type: application/json' -d "$payload" \
         || echo '{"check":"synthetic","status":"warn","detail":"could not send metrics to New Relic"}'
+}
+
+report_edge() { # success(0|1) duration_ms detail
+    [ -n "$NR_KEY" ] || return 0
+    now="$(date +%s)"
+    payload="$(jq -nc --argjson ok "$1" --argjson ms "$2" --arg detail "$3" --arg env "$CHECK_ENVIRONMENT" --argjson ts "$now" \
+        '[{"common":{"timestamp":$ts,"attributes":{"environment":$env,"detail":$detail,"service":"synthetic-check"}},
+           "metrics":[{"name":"snippet_searcher.synthetic.edge_success","type":"gauge","value":$ok},
+                      {"name":"snippet_searcher.synthetic.edge_duration_ms","type":"gauge","value":$ms}]}]')"
+    curl -sS -o /dev/null --max-time 10 -X POST "$NEW_RELIC_METRIC_API" \
+        -H "Api-Key: $NR_KEY" -H 'Content-Type: application/json' -d "$payload" \
+        || echo '{"check":"synthetic-edge","status":"warn","detail":"could not send metrics to New Relic"}'
+}
+
+# edge_check SNIPPET_ID: HTTPS + WebSocket run through the public domain (skipped when PUBLIC_URL is empty)
+edge_check() {
+    [ -n "$PUBLIC_URL" ] || return 0
+    result="$(node /synthetic/edge-check.mjs "$PUBLIC_URL" "$token" "$1")"
+    ok="$(printf '%s' "$result" | jq -r 'if .ok then 1 else 0 end' 2>/dev/null || echo 0)"
+    ms="$(printf '%s' "$result" | jq -r '.ms // 0' 2>/dev/null || echo 0)"
+    detail="$(printf '%s' "$result" | jq -r '.detail // "no output"' 2>/dev/null || echo "no output")"
+    if [ "$ok" = "1" ]; then log ok edge "$detail" "$ms"; else log fail edge "$detail" "$ms"; fi
+    report_edge "$ok" "$ms" "$detail"
 }
 
 fetch_token() {
@@ -91,6 +120,8 @@ run_once() {
         call DELETE "/snippets/$id"
         return
     fi
+
+    edge_check "$id"
 
     call DELETE "/snippets/$id"
     if [ "$status" != "204" ] && [ "$status" != "200" ]; then

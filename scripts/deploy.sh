@@ -9,6 +9,7 @@ NGINX_TEMPLATE_FILE="$SCRIPT_DIR/../swarm/nginx/default.conf"
 NGINX_CONFIG_FILE="$SCRIPT_DIR/../swarm/nginx/default.rendered.conf"
 ENGINE_PROXY_CONFIG_FILE="$SCRIPT_DIR/../swarm/nginx/engine-proxy.conf"
 SYNTHETIC_SCRIPT_FILE="$SCRIPT_DIR/../swarm/synthetic/check.sh"
+SYNTHETIC_EDGE_FILE="$SCRIPT_DIR/../swarm/synthetic/edge-check.mjs"
 # How long to wait for every service to finish updating (or roll back) after the deploy. Updates go one task
 # at a time with a 90 s monitor each, so a full deploy can take several minutes.
 CONVERGE_TIMEOUT="${CONVERGE_TIMEOUT:-900}"
@@ -45,11 +46,12 @@ if [[ ! "$DOMAIN" =~ ^[a-z0-9.-]+$ ]]; then
     exit 1
 fi
 sed "s/\${DOMAIN}/$DOMAIN/g" "$NGINX_TEMPLATE_FILE" > "$NGINX_CONFIG_FILE"
+export DOMAIN   # the synthetic edge check calls https://$DOMAIN
 
 NGINX_CONFIG_VERSION="$(sha256sum "$NGINX_CONFIG_FILE" | cut -c1-12)"
 export NGINX_CONFIG_VERSION
 
-SYNTHETIC_SCRIPT_VERSION="$(sha256sum "$SYNTHETIC_SCRIPT_FILE" | cut -c1-12)"
+SYNTHETIC_SCRIPT_VERSION="$(cat "$SYNTHETIC_SCRIPT_FILE" "$SYNTHETIC_EDGE_FILE" | sha256sum | cut -c1-12)"
 export SYNTHETIC_SCRIPT_VERSION
 
 ENGINE_PROXY_CONFIG_VERSION="$(sha256sum "$ENGINE_PROXY_CONFIG_FILE" | cut -c1-12)"

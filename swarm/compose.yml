@@ -347,13 +347,18 @@ services:
   # Create, read and delete a snippet through the API every minute; results go to New Relic
   # (metrics snippet_searcher.synthetic.*) and to this service's logs. See swarm/synthetic/check.sh.
   synthetic-check:
-    image: alpine:3.20
+    # Node 22 brings fetch and WebSocket for the edge check; curl and jq run the API check
+    image: node:22-alpine
     command: ["sh", "-c", "apk add --no-cache curl jq >/dev/null && exec sh /synthetic/check.sh"]
     configs:
       - source: synthetic-check-script
         target: /synthetic/check.sh
+      - source: synthetic-edge-script
+        target: /synthetic/edge-check.mjs
     environment:
       BASE_URL: "http://snippet-service:8080"
+      # the edge check goes in through the public domain like a user: DNS, TLS, nginx, WebSocket
+      PUBLIC_URL: "https://${DOMAIN:?DOMAIN must be set}"
       CHECK_INTERVAL: "60"
       CHECK_ENVIRONMENT: "${DEPLOY_ENVIRONMENT:-unknown}"
       AUTH0_DOMAIN: "${AUTH0_DOMAIN:?AUTH0_DOMAIN must be set}"
@@ -383,6 +388,9 @@ configs:
   synthetic-check-script:
     name: "synthetic-check-script-${SYNTHETIC_SCRIPT_VERSION:?SYNTHETIC_SCRIPT_VERSION must be set}"
     file: ./synthetic/check.sh
+  synthetic-edge-script:
+    name: "synthetic-edge-script-${SYNTHETIC_SCRIPT_VERSION:?SYNTHETIC_SCRIPT_VERSION must be set}"
+    file: ./synthetic/edge-check.mjs
 
 secrets:
   service-postgres-password:

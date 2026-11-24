@@ -44,6 +44,7 @@ jobs:
           NGINX_CONFIG_VERSION: ci-placeholder
           SYNTHETIC_SCRIPT_VERSION: ci-placeholder
           SYNTHETIC_CLIENT_ID: ci-placeholder
+          DOMAIN: ci.example.org
           TLS_VERSION: ci-placeholder
           SERVICE_POSTGRES_DB: ci-placeholder
           SERVICE_POSTGRES_USER: ci-placeholder

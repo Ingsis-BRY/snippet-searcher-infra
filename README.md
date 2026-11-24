@@ -431,7 +431,10 @@ Azure identity can only edit security rules of that one NSG; see
 - **Synthetic check:** the `synthetic-check` service creates, reads and deletes a snippet through
   the API every minute, logged in as an Auth0 machine-to-machine application, and sends
   `snippet_searcher.synthetic.success` and `snippet_searcher.synthetic.duration_ms` to New Relic
-  (`swarm/synthetic/check.sh`).
+  (`swarm/synthetic/check.sh`). Each run also goes through the environment's **public domain** like a user
+  (`swarm/synthetic/edge-check.mjs`): an HTTPS GET through nginx and a full interactive run over the
+  WebSocket, reported separately as `snippet_searcher.synthetic.edge_success` and `edge_duration_ms` so a
+  problem in DNS, TLS, nginx or the WebSocket shows up even when the API itself is fine.
 - **Alerts:** `scripts/newrelic-alerts.sh dev|prod` creates the policy *Snippet Searcher (env)*
   through NerdGraph, with `NEW_RELIC_API_KEY` (a user key) and `NEW_RELIC_ACCOUNT_ID` in the
   environment. Conditions: synthetic check failing or silent, API error rate above 5 %, API p95
