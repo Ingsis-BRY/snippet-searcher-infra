@@ -17,27 +17,30 @@ x-snippet-service-environment: &snippet-service-environment
   # one JSON object per log line (Elastic Common Schema), with traceId/spanId from Micrometer Tracing
   LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
 
-# Rolling updates for stateless services: start the new task first, watch it for a minute and roll
-# back on its own if it fails its healthcheck or exits. deploy.sh then waits for every service to settle.
+# Zero-downtime rolling updates for stateless services: start the new task first, keep the old one
+# serving until the new one is healthy, watch it for 90 s and roll back on its own if it fails its
+# healthcheck or exits. One task at a time with a pause between them, so a small VM never starts every
+# JVM at once. deploy.sh then waits for every service to settle.
 x-rolling-update: &rolling-update
   update_config:
     parallelism: 1
-    delay: 10s
+    delay: 20s
     order: start-first
     failure_action: rollback
-    monitor: 60s
+    monitor: 90s
   rollback_config:
     parallelism: 1
     order: start-first
 
 # Spring services answer /actuator/health/readiness once the context is up (DB, Redis, ...).
-# start_period covers JVM start plus the New Relic agent.
+# start_period covers JVM start plus the New Relic agent on a busy VM (the prod VM took far longer
+# than dev while several JVMs were starting together); failures inside it don't count.
 x-spring-healthcheck: &spring-healthcheck
   test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health/readiness"]
   interval: 15s
   timeout: 5s
   retries: 5
-  start_period: 120s
+  start_period: 180s
 
 x-postgres-healthcheck: &postgres-healthcheck
   test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
@@ -180,6 +183,14 @@ services:
     volumes:
       - type: tmpfs
         target: /tmp
+    # Replaces the image's HEALTHCHECK (30 s start period): on the prod VM the engine took ~28 s to start
+    # while other JVMs were starting, was marked unhealthy and the update rolled back.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
     stop_grace_period: 30s
     networks:
       - engine-network
@@ -192,12 +203,17 @@ services:
         limits:
           cpus: "1"
           memory: 512M
-      # the image's own HEALTHCHECK (actuator) gates each replica
+      # zero downtime: a third replica starts, and an old one stops only once the new one is healthy,
+      # so the engine never drops below 2 replicas during a deploy
       update_config:
         parallelism: 1
-        delay: 10s
+        delay: 20s
+        order: start-first
         failure_action: rollback
-        monitor: 30s
+        monitor: 90s
+      rollback_config:
+        parallelism: 1
+        order: start-first
       restart_policy:
         condition: any
 
