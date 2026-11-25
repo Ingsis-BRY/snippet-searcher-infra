@@ -38,7 +38,7 @@ jobs:
           -keyout /tmp/tls/tls_key -out /tmp/tls/tls_cert
 
       - name: Validate Swarm configuration
-        run: docker compose -f swarm/compose.yml config -q
+        run: for stack in infra service permission engine ui; do docker compose -f "swarm/stacks/$stack.yml" config -q; done
         env:
           SNIPPET_SERVICE_IMAGE: ghcr.io/ingsis-bry/snippet-service:latest
           NGINX_CONFIG_VERSION: ci-placeholder

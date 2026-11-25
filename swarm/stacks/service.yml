@@ -1,0 +1,120 @@
+# Stack `snippet-service`: the snippet API (profile api) and its background worker (profile worker).
+# Both run the same image, so they always deploy together. Needs the shared stack (infra.yml) for
+# its database, Redis and Azurite, reached through the external `snippet-network`.
+
+# New Relic app names carry the environment (snippet-service-dev, snippet-service-prod) so the two
+# environments never mix in one APM entity; the alert policies (scripts/newrelic-alerts.sh) use them.
+x-snippet-service-environment: &snippet-service-environment
+  DB_HOST: snippet-service-db
+  POSTGRES_DB: "${SERVICE_POSTGRES_DB:?SERVICE_POSTGRES_DB must be set}"
+  POSTGRES_USER: "${SERVICE_POSTGRES_USER:?SERVICE_POSTGRES_USER must be set}"
+  AUTH0_DOMAIN: "${AUTH0_DOMAIN:?AUTH0_DOMAIN must be set}"
+  AUTH0_AUDIENCE: "${AUTH0_AUDIENCE:?AUTH0_AUDIENCE must be set}"
+  AUTH0_M2M_CLIENT_ID: "${AUTH0_M2M_CLIENT_ID:?AUTH0_M2M_CLIENT_ID must be set}"
+  SPRING_CONFIG_IMPORT: "configtree:/run/secrets/"
+  ENGINE_URL: "http://engine-proxy:80"
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  NEW_RELIC_APP_NAME: "snippet-service-${DEPLOY_ENVIRONMENT:-dev}"
+  NEW_RELIC_LOG_FILE_NAME: "STDOUT"
+  # one JSON object per log line (Elastic Common Schema), with traceId/spanId from Micrometer Tracing
+  LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
+
+# Zero-downtime rolling updates for stateless services: start the new task first, keep the old one
+# serving until the new one is healthy, watch it for 90 s and roll back on its own if it fails its
+# healthcheck or exits. One task at a time with a pause between them, so a small VM never starts every
+# JVM at once. deploy.sh then waits for every service to settle.
+x-rolling-update: &rolling-update
+  update_config:
+    parallelism: 1
+    delay: 20s
+    order: start-first
+    failure_action: rollback
+    monitor: 90s
+  rollback_config:
+    parallelism: 1
+    order: start-first
+
+# Spring services answer /actuator/health/readiness once the context is up (DB, Redis, ...).
+# start_period covers JVM start plus the New Relic agent on a busy VM (the prod VM took far longer
+# than dev while several JVMs were starting together); failures inside it don't count.
+x-spring-healthcheck: &spring-healthcheck
+  test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health/readiness"]
+  interval: 15s
+  timeout: 5s
+  retries: 5
+  start_period: 180s
+
+# The New Relic agent only reads its license key from the environment, so the entrypoint loads it
+# from the secret file and then starts the same command as the image (WORKDIR /app).
+x-java-entrypoint: &java-entrypoint
+  - sh
+  - -c
+  - >-
+    export NEW_RELIC_LICENSE_KEY="$$(cat /run/secrets/NEW_RELIC_LICENSE_KEY)";
+    exec java -javaagent:/app/newrelic/newrelic.jar -jar app.jar
+
+x-snippet-service-secrets: &snippet-service-secrets
+  - source: service-postgres-password
+    target: POSTGRES_PASSWORD
+  - source: azure-storage-connection-string-v2
+    target: azure.storage.connection-string
+  - source: auth0-m2m-client-secret
+    target: AUTH0_M2M_CLIENT_SECRET
+  - source: new-relic-license-key
+    target: NEW_RELIC_LICENSE_KEY
+
+services:
+  snippet-service:
+    image: "${SNIPPET_SERVICE_IMAGE:?SNIPPET_SERVICE_IMAGE must be set}"
+    entrypoint: *java-entrypoint
+    secrets: *snippet-service-secrets
+    environment:
+      <<: *snippet-service-environment
+      SPRING_PROFILES_ACTIVE: api
+      NEW_RELIC_APP_NAME: "snippet-service-${DEPLOY_ENVIRONMENT:-dev}"
+    healthcheck: *spring-healthcheck
+    networks:
+      - snippet-network
+    deploy:
+      <<: *rolling-update
+      replicas: 1
+      restart_policy:
+        condition: any
+
+  # Same image as snippet-service, started with the `worker` profile: no HTTP server,
+  # it consumes the Redis stream snippet.analysis (lint, format, tests, re-validation).
+  snippet-worker:
+    image: "${SNIPPET_SERVICE_IMAGE:?SNIPPET_SERVICE_IMAGE must be set}"
+    entrypoint: *java-entrypoint
+    secrets: *snippet-service-secrets
+    environment:
+      <<: *snippet-service-environment
+      SPRING_PROFILES_ACTIVE: worker
+      NEW_RELIC_APP_NAME: "snippet-worker-${DEPLOY_ENVIRONMENT:-dev}"
+    networks:
+      - snippet-network
+    stop_grace_period: 30s
+    deploy:
+      replicas: 1
+      update_config:
+        order: stop-first
+        failure_action: rollback
+        monitor: 60s
+      restart_policy:
+        condition: any
+
+secrets:
+  service-postgres-password:
+    external: true
+  azure-storage-connection-string-v2:
+    external: true
+  auth0-m2m-client-secret:
+    external: true
+  new-relic-license-key:
+    external: true
+
+networks:
+  snippet-network:
+    external: true
+    name: snippet-network

@@ -1,0 +1,34 @@
+# Stack `snippet-ui`: the web front end. nginx (shared stack) proxies `/` to it over the external
+# `snippet-network`.
+
+x-rolling-update: &rolling-update
+  update_config:
+    parallelism: 1
+    delay: 20s
+    order: start-first
+    failure_action: rollback
+    monitor: 90s
+  rollback_config:
+    parallelism: 1
+    order: start-first
+
+services:
+  printscript-ui:
+    image: "${PRINTSCRIPT_UI_IMAGE:?PRINTSCRIPT_UI_IMAGE must be set}"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+    networks:
+      - snippet-network
+    deploy:
+      <<: *rolling-update
+      replicas: 1
+      restart_policy:
+        condition: any
+
+networks:
+  snippet-network:
+    external: true
+    name: snippet-network

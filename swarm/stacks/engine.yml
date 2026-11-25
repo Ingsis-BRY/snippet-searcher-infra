@@ -1,0 +1,98 @@
+# Stack `snippet-engine`: the PrintScript engine and the proxy in front of it. They are coupled (the
+# proxy's config names the engine's DNS entry and both sit on the internal engine-network), so they
+# deploy together. Both networks are external and created once by scripts/create-networks.sh;
+# engine-network is `--internal`, so the engine (which runs untrusted code) has no outbound access.
+
+x-rolling-update: &rolling-update
+  update_config:
+    parallelism: 1
+    delay: 20s
+    order: start-first
+    failure_action: rollback
+    monitor: 90s
+  rollback_config:
+    parallelism: 1
+    order: start-first
+
+services:
+  # The engine runs untrusted code. `docker stack deploy` ignores security_opt
+  # (no-new-privileges) and pids limits are not reliably supported on the VM's
+  # Engine, so the hardening relies on: a non-root `engine` user in the image,
+  # ExitOnOutOfMemoryError, the memory/CPU limits and the restart policy below.
+  printscript-engine:
+    image: "${PRINTSCRIPT_ENGINE_IMAGE:?PRINTSCRIPT_ENGINE_IMAGE must be set}"
+    environment:
+      LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
+    read_only: true
+    cap_drop:
+      - ALL
+    volumes:
+      - type: tmpfs
+        target: /tmp
+    # Replaces the image's HEALTHCHECK (30 s start period): on the prod VM the engine took ~28 s to start
+    # while other JVMs were starting, was marked unhealthy and the update rolled back.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+    stop_grace_period: 30s
+    networks:
+      - engine-network
+    deploy:
+      replicas: 2
+      # dnsrr: DNS returns one address per task, so the proxy's `resolve` and
+      # proxy_next_upstream work per replica. No published ports.
+      endpoint_mode: dnsrr
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+      # zero downtime: a third replica starts, and an old one stops only once the new one is healthy,
+      # so the engine never drops below 2 replicas during a deploy
+      update_config:
+        parallelism: 1
+        delay: 20s
+        order: start-first
+        failure_action: rollback
+        monitor: 90s
+      rollback_config:
+        parallelism: 1
+        order: start-first
+      restart_policy:
+        condition: any
+
+  # Internal only: snippet-service reaches the engines through it (ENGINE_URL), which is why it is also
+  # on snippet-network. `server ... resolve` in engine-proxy.conf needs nginx 1.27.3 or later.
+  engine-proxy:
+    image: nginx:1.28-alpine
+    configs:
+      - source: engine-proxy-config
+        target: /etc/nginx/conf.d/default.conf
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - engine-network
+      - snippet-network
+    deploy:
+      <<: *rolling-update
+      replicas: 1
+      restart_policy:
+        condition: any
+
+configs:
+  engine-proxy-config:
+    name: "engine-proxy-config-${ENGINE_PROXY_CONFIG_VERSION:?ENGINE_PROXY_CONFIG_VERSION must be set}"
+    file: ../nginx/engine-proxy.conf
+
+networks:
+  snippet-network:
+    external: true
+    name: snippet-network
+  engine-network:
+    external: true
+    name: engine-network

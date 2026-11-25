@@ -113,7 +113,11 @@ jobs:
           cd "$DEPLOY_PATH"
           git fetch --prune origin "$DEPLOY_BRANCH"
           git checkout --force --detach "$DEPLOY_SHA"
-          sudo -E scripts/deploy.sh
+          # one stack at a time; an unchanged stack keeps its running image and is not restarted.
+          # New images of a single microservice are deployed by deploy-service.yml instead.
+          for stack in infra service permission engine ui; do
+            sudo -E scripts/deploy.sh "$stack"
+          done
           REMOTE
           } | ssh -i "$RUNNER_TEMP/deploy_key" -o IdentitiesOnly=yes \
                  -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
