@@ -24,7 +24,7 @@ jobs:
         run: for script in scripts/*.sh; do bash -n "$script"; done && sh -n swarm/synthetic/check.sh
 
       - name: Lint scripts
-        run: docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:v0.10.0 scripts/*.sh swarm/synthetic/check.sh
+        run: docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:v0.10.0 -x scripts/*.sh swarm/synthetic/check.sh
 
       # deploy.sh does the same with each environment's DOMAIN
       - name: Render nginx configuration

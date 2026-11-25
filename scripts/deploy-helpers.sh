@@ -2,6 +2,8 @@
 # Helpers shared by deploy.sh and create-networks.sh. Sourced, never executed.
 
 # Networks shared by every stack. Created once by scripts/create-networks.sh.
+# Used by the scripts that source this file, so ShellCheck cannot see it here.
+# shellcheck disable=SC2034
 SNIPPET_NETWORK="snippet-network"
 ENGINE_NETWORK="engine-network"
 

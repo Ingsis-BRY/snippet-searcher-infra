@@ -6,7 +6,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=deploy-helpers.sh
+# shellcheck source-path=SCRIPTDIR source=deploy-helpers.sh
 source "$SCRIPT_DIR/deploy-helpers.sh"
 
 require_swarm
