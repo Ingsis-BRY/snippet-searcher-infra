@@ -1,16 +1,12 @@
-name: Deploy service
+name: Deploy service (dev)
 
-# Deploys one microservice (its own stack) with the image the caller asks for, leaving every other
-# stack untouched. Two ways in:
-#   - repository_dispatch (event type `deploy-service`), sent by a microservice repo once its image is
-#     published. Payload: {"service": "...", "image": "ghcr.io/ingsis-bry/<service>:<tag>", "environment": "dev|prod"}
-#   - workflow_dispatch, by hand. An empty image redeploys the stack with the image it is running now.
-# See README, "Continuous Deployment".
+# Deploys one microservice (its own stack) to the dev VM with the image the caller asks for, leaving every
+# other stack untouched. It is started with workflow_dispatch on the `dev` branch, either by hand or by a
+# microservice repo once its image is published (`gh workflow run deploy-service.yml --ref dev ...`, see
+# README). An empty image redeploys the stack with the image it is running now.
+# Prod is never deployed from here: it only deploys through CD-prod (merged dev -> prod PR).
 
 on:
-  repository_dispatch:
-    types: [deploy-service]
-
   workflow_dispatch:
     inputs:
       service:
@@ -23,14 +19,6 @@ on:
           - printscript-engine
           - printscript-ui
           - infra
-      environment:
-        description: Environment
-        type: choice
-        required: true
-        default: dev
-        options:
-          - dev
-          - prod
       image:
         description: "Full image reference, e.g. ghcr.io/ingsis-bry/printscript-ui:<sha>. Empty keeps the running image."
         type: string
@@ -41,45 +29,40 @@ permissions:
   id-token: write # OIDC login to Azure, no stored Azure password
 
 jobs:
-  # The dispatch payload comes from another repository: it is validated here and only ever handed to
-  # the shell through environment variables.
-  prepare:
+  deploy:
     runs-on: ubuntu-latest
-    outputs:
-      stack: ${{ steps.validate.outputs.stack }}
-      image: ${{ steps.validate.outputs.image }}
-      environment: ${{ steps.validate.outputs.environment }}
+    environment: dev
+    timeout-minutes: 30 # a deploy may first wait for another deployment on the VM
+
+    # Never run two deployments of the same service at once, and never cancel one in progress.
+    # Different services run in parallel; scripts/deploy.sh makes them take turns on the VM.
+    concurrency:
+      group: deploy-dev-${{ inputs.service }}
+      cancel-in-progress: false
+
+    env:
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_NSG_NAME: ${{ vars.AZURE_NSG_NAME }}
+
     steps:
+      # The inputs may come from another repository: they are validated here and only ever handed to
+      # the shell through environment variables.
       - name: Validate the request
         id: validate
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          SERVICE: ${{ github.event.client_payload.service || inputs.service }}
-          IMAGE: ${{ github.event.client_payload.image || inputs.image }}
-          ENVIRONMENT: ${{ github.event.client_payload.environment || inputs.environment }}
+          SERVICE: ${{ inputs.service }}
+          IMAGE: ${{ inputs.image }}
         run: |
+          # one firewall rule (name and priority) per stack, so parallel deployments do not collide with
+          # each other or with CD-dev (priority 105)
           case "$SERVICE" in
-            snippet-service) stack=service ;;
-            snippet-permission-service) stack=permission ;;
-            printscript-engine) stack=engine ;;
-            printscript-ui) stack=ui ;;
-            infra)
-              if [[ "$EVENT_NAME" == repository_dispatch ]]; then
-                echo "The shared stack can only be deployed by hand." >&2
-                exit 1
-              fi
-              stack=infra
-              ;;
+            snippet-service) stack=service; priority=106 ;;
+            snippet-permission-service) stack=permission; priority=107 ;;
+            printscript-engine) stack=engine; priority=108 ;;
+            printscript-ui) stack=ui; priority=109 ;;
+            infra) stack=infra; priority=110 ;;
             *)
               echo "Unknown service." >&2
-              exit 1
-              ;;
-          esac
-
-          case "$ENVIRONMENT" in
-            dev | prod) ;;
-            *)
-              echo "environment must be dev or prod." >&2
               exit 1
               ;;
           esac
@@ -96,25 +79,116 @@ jobs:
               echo "image must be ghcr.io/ingsis-bry/${SERVICE}:<immutable tag> (not :latest)." >&2
               exit 1
             fi
-          elif [[ "$EVENT_NAME" == repository_dispatch ]]; then
-            echo "image is required." >&2
-            exit 1
           fi
 
           {
             echo "stack=$stack"
             echo "image=$IMAGE"
-            echo "environment=$ENVIRONMENT"
+            echo "priority=$priority"
           } >> "$GITHUB_OUTPUT"
 
-  deploy:
-    needs: prepare
-    uses: ./.github/workflows/deploy-stack.yml
-    with:
-      environment: ${{ needs.prepare.outputs.environment }}
-      stack: ${{ needs.prepare.outputs.stack }}
-      image: ${{ needs.prepare.outputs.image }}
-    secrets: inherit
-    permissions:
-      contents: read
-      id-token: write
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # GitHub runners have no fixed IP and SSH is closed to everyone else, so open port 22
+      # to this runner's IP only. The rule is removed in the last step even if the deploy fails.
+      - name: Allow this runner's IP on SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          NSG_RULE_NAME: Allow-GitHub-Deploy-Dev-${{ steps.validate.outputs.stack }}
+          NSG_RULE_PRIORITY: ${{ steps.validate.outputs.priority }}
+        run: |
+          runner_ip="$(curl -fsS https://api.ipify.org)"
+
+          if ! python3 -c '
+          import ipaddress
+          import sys
+
+          try:
+              ipaddress.IPv4Address(sys.argv[1])
+          except ipaddress.AddressValueError:
+              sys.exit(1)
+          ' "$runner_ip"; then
+            echo "Could not determine a valid IPv4 address." >&2
+            exit 1
+          fi
+          az network nsg rule create \
+            --resource-group "$AZURE_RESOURCE_GROUP" --nsg-name "$AZURE_NSG_NAME" \
+            --name "$NSG_RULE_NAME" --priority "$NSG_RULE_PRIORITY" --direction Inbound --access Allow \
+            --protocol Tcp --destination-port-ranges 22 \
+            --source-address-prefixes "$runner_ip" --output none
+          for _ in $(seq 1 12); do
+            if nc -z -w 5 "$DEPLOY_HOST" 22; then exit 0; fi
+            sleep 5
+          done
+          echo "SSH on the VM is still unreachable after opening the firewall." >&2
+          exit 1
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/deploy_key"
+          chmod 600 "$RUNNER_TEMP/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
+
+      # Only non-secret settings travel from GitHub (environment variables). Passwords and keys are
+      # Docker secrets that already exist on the VM (see scripts/create-secrets.sh).
+      # DEPLOY_IMAGE is the image the service's own pipeline asked for. The *_IMAGE environment variables
+      # are only used by the very first deployment of a stack; after that the running image is kept.
+      - name: Deploy stack on the dev VM
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          DEPLOY_BRANCH: dev
+          DEPLOY_STACK: ${{ steps.validate.outputs.stack }}
+          DEPLOY_IMAGE: ${{ steps.validate.outputs.image }}
+          SNIPPET_SERVICE_IMAGE: ${{ vars.SNIPPET_SERVICE_IMAGE }}
+          PERMISSION_SERVICE_IMAGE: ${{ vars.PERMISSION_SERVICE_IMAGE }}
+          PRINTSCRIPT_UI_IMAGE: ${{ vars.PRINTSCRIPT_UI_IMAGE }}
+          PRINTSCRIPT_ENGINE_IMAGE: ${{ vars.PRINTSCRIPT_ENGINE_IMAGE }}
+          SERVICE_POSTGRES_DB: ${{ vars.SERVICE_POSTGRES_DB }}
+          SERVICE_POSTGRES_USER: ${{ vars.SERVICE_POSTGRES_USER }}
+          PERMISSION_POSTGRES_DB: ${{ vars.PERMISSION_POSTGRES_DB }}
+          PERMISSION_POSTGRES_USER: ${{ vars.PERMISSION_POSTGRES_USER }}
+          AUTH0_DOMAIN: ${{ vars.AUTH0_DOMAIN }}
+          AUTH0_AUDIENCE: ${{ vars.AUTH0_AUDIENCE }}
+          AUTH0_M2M_CLIENT_ID: ${{ vars.AUTH0_M2M_CLIENT_ID }}
+          # this environment's own subdomain (nginx server_name; its certificate is issued for it)
+          DOMAIN: ${{ vars.DOMAIN }}
+          DEPLOY_ENVIRONMENT: dev
+          SYNTHETIC_CLIENT_ID: ${{ vars.SYNTHETIC_CLIENT_ID }}
+        run: |
+          {
+            for var in DEPLOY_PATH DEPLOY_BRANCH DEPLOY_STACK DEPLOY_IMAGE SNIPPET_SERVICE_IMAGE PERMISSION_SERVICE_IMAGE PRINTSCRIPT_UI_IMAGE PRINTSCRIPT_ENGINE_IMAGE SERVICE_POSTGRES_DB SERVICE_POSTGRES_USER PERMISSION_POSTGRES_DB PERMISSION_POSTGRES_USER AUTH0_DOMAIN AUTH0_AUDIENCE AUTH0_M2M_CLIENT_ID DOMAIN DEPLOY_ENVIRONMENT SYNTHETIC_CLIENT_ID; do
+              printf 'export %s=%q\n' "$var" "${!var}"
+            done
+            cat <<'REMOTE'
+          set -euo pipefail
+          cd "$DEPLOY_PATH"
+          git fetch --prune origin "$DEPLOY_BRANCH"
+          git checkout --force --detach FETCH_HEAD
+          sudo -E scripts/deploy.sh "$DEPLOY_STACK"
+          REMOTE
+          } | ssh -i "$RUNNER_TEMP/deploy_key" -o IdentitiesOnly=yes \
+                 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+                 "$DEPLOY_USER@$DEPLOY_HOST" bash -s
+
+      - name: Close SSH to this runner
+        if: always()
+        env:
+          NSG_RULE_NAME: Allow-GitHub-Deploy-Dev-${{ steps.validate.outputs.stack }}
+        run: |
+          az network nsg rule delete \
+            --resource-group "$AZURE_RESOURCE_GROUP" --nsg-name "$AZURE_NSG_NAME" \
+            --name "$NSG_RULE_NAME" --output none || true
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/deploy_key"

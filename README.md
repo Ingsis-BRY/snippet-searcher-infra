@@ -382,44 +382,54 @@ created once per VM by `scripts/create-networks.sh`; services still reach each o
 
 `scripts/deploy.sh <infra|service|permission|engine|ui>` deploys **one** stack on the VM over SSH,
 waits for that stack only, and takes a lock so two deployments on the same VM take turns. For an
-application stack the image is, in order: `DEPLOY_IMAGE` (the one requested), the image that is
-running now, or the `*_IMAGE` environment variable (first deployment only). Redeploying a stack
-therefore never rolls a service back to a stale tag.
+application stack the image is, in order: `DEPLOY_IMAGE` (the one requested); the `*_IMAGE`
+environment variable, only for prod (`CD-prod.yml` sets `USE_CONFIGURED_IMAGES=true`, so the prod
+variables are what gets promoted); the image that is running now; or the `*_IMAGE` variable on the
+first deployment of a stack. On dev, redeploying a stack therefore never rolls a service back to a
+stale tag.
 
 | Workflow | Target | Trigger |
 |---|---|---|
 | `.github/workflows/CD-dev.yml` | dev VM | Push to `dev` (a merged PR into `dev`), or manual dispatch. Deploys every stack, in order; unchanged stacks are not restarted |
 | `.github/workflows/CD-prod.yml` | prod VM | A pull request from `dev` into `prod` is **merged**. PRs from other branches, unmerged PRs and direct pushes never deploy |
-| `.github/workflows/deploy-service.yml` | dev or prod VM | `repository_dispatch` (event `deploy-service`) from a microservice repo, or manual dispatch. Deploys **only that service's stack** with the requested image |
-| `.github/workflows/deploy-stack.yml` | | Reusable job (Azure login, temporary SSH rule, deploy of one stack) called by `deploy-service.yml` |
+| `.github/workflows/deploy-service.yml` | dev VM only | Manual dispatch on the `dev` branch, by hand or from a microservice repo. Deploys **only that service's stack** with the requested image. Prod is never deployed from it |
 
 Each workflow uses the GitHub Environment of the same name (`dev`, `prod`;
 add required reviewers to `prod`) and never runs two deployments of the same
 environment at once. The VM checks out the exact commit that triggered the run (for
-`deploy-service.yml`, the tip of the branch named like the environment, `dev` or `prod`).
+`deploy-service.yml`, the tip of the `dev` branch).
 
-#### Deploying one microservice
+#### Deploying one microservice (dev)
 
-Manually: Actions, "Deploy service", choose the service, the environment and the image
+Manually: Actions, "Deploy service (dev)", choose the service and the image
 (`ghcr.io/ingsis-bry/<service>:<tag>`). An empty image redeploys the stack with the image it is running.
 That is also the rollback: run it again with an older `:<sha>` tag.
 
-From a microservice repo (to be added to that repo's publish workflow, after the image is pushed):
+From a microservice repo: its "Publish Docker Image" workflow ends with a job that starts this
+workflow on the `dev` branch once the image is pushed:
 
-```bash
-gh api repos/Ingsis-BRY/snippet-infra/dispatches \
-  -f event_type=deploy-service \
-  -f 'client_payload[service]=snippet-service' \
-  -f 'client_payload[image]=ghcr.io/ingsis-bry/snippet-service:<immutable-tag>' \
-  -f 'client_payload[environment]=dev'
+```yaml
+  deploy-dev:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ask the infra repository to deploy this image to dev
+        env:
+          GH_TOKEN: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+        run: |
+          gh workflow run deploy-service.yml \
+            --repo Ingsis-BRY/snippet-infra --ref dev \
+            -f service="${IMAGE_NAME#*/}" \
+            -f image="ghcr.io/${IMAGE_NAME}:${GITHUB_SHA}"
 ```
 
-`service` is one of `snippet-service`, `snippet-permission-service`, `printscript-engine`,
-`printscript-ui`. The workflow rejects any other service, an image that is not that service's own
-`ghcr.io/ingsis-bry/<service>:<tag>`, a `:latest` tag (Swarm would not re-pull it) and anything but
-`dev` or `prod`. The call needs a token with write access to this repository (a fine-grained token
-limited to it, stored as a secret in the microservice repo). Deploys to `prod` wait for the approval
-of the `prod` environment.
+`IMAGE_NAME` is the workflow's existing `ingsis-bry/<service>` variable, so the service name is the
+only thing that differs between repos. `service` must be one of `snippet-service`,
+`snippet-permission-service`, `printscript-engine`, `printscript-ui`. The workflow rejects an image
+that is not that service's own `ghcr.io/ingsis-bry/<service>:<tag>` and a `:latest` tag (Swarm would
+not re-pull it). `INFRA_DEPLOY_TOKEN` is a fine-grained token limited to this repository with the
+Actions read and write permission, stored as a secret in each microservice repo. The workflow file
+must exist on the `dev` branch of this repository.
 
 #### One-time migration from the single `snippet-searcher` stack
 
@@ -453,7 +463,9 @@ small VM several JVMs start at the same time. The script then waits (up to `CONV
 for every service of the stack to settle and **fails the
 deployment** if one rolled back or isn't running all its replicas, which marks the GitHub run red.
 To roll back by hand, run "Deploy service" with an older `:<sha>` tag, or redeploy an older commit
-(`workflow_dispatch` on CD-dev). The `*_IMAGE` environment variables are only used for the first deployment of a stack.
+(`workflow_dispatch` on CD-dev). In prod, images are promoted by setting the `*_IMAGE` variables of the
+`prod` environment and merging the `dev` -> `prod` PR; to roll back, set them to an older `:<sha>` tag and
+redeploy. On dev the `*_IMAGE` variables are only used for the first deployment of a stack.
 
 Order matters when a change spans repositories: merge and publish the service images first, then
 the infra change that depends on them (for example, healthchecks need images with `/actuator/health`).
@@ -561,8 +573,7 @@ failures; 61 req/s at 80 users with p95 140 ms; p95 flat at 140 to 150 ms across
 │       ├── CD-dev.yml
 │       ├── CD-prod.yml
 │       ├── CI.yml
-│       ├── deploy-service.yml
-│       └── deploy-stack.yml
+│       └── deploy-service.yml
 ├── docs/
 │   ├── azure-vm-setup.md
 │   └── azure-vm.env.example
