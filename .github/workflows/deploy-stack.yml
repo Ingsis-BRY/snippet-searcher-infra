@@ -1,0 +1,159 @@
+name: Deploy stack (reusable)
+
+# Deploys ONE Swarm stack to the VM of one environment. Called by CD (dev), CD (prod) and
+# Deploy service. The environment name is also the branch of this repo that the VM checks out
+# (dev -> dev, prod -> prod).
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: dev or prod
+        type: string
+        required: true
+      stack:
+        description: infra, service, permission, engine or ui
+        type: string
+        required: true
+      image:
+        description: Image to deploy (application stacks). Empty keeps the image that is running.
+        type: string
+        required: false
+        default: ""
+      deploy_sha:
+        description: Commit of this repo to deploy. Empty deploys the tip of the environment's branch.
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write # OIDC login to Azure, no stored Azure password
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 30 # a deploy may first wait for another stack's deployment on the VM
+
+    # Never run two deployments of the same stack to the same VM at once, and never cancel one in progress.
+    # Different stacks run in parallel; scripts/deploy.sh makes them take turns on the VM.
+    concurrency:
+      group: deploy-${{ inputs.environment }}-${{ inputs.stack }}
+      cancel-in-progress: false
+
+    env:
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_NSG_NAME: ${{ vars.AZURE_NSG_NAME }}
+      # Temporary firewall rule, only alive while the deployment runs. One rule (and priority) per stack,
+      # because stacks can deploy at the same time and an NSG needs a unique name and priority per rule.
+      NSG_RULE_NAME: Allow-GitHub-Deploy-${{ inputs.environment }}-${{ inputs.stack }}
+      NSG_RULE_PRIORITY: ${{ fromJSON('{"service":106,"permission":107,"engine":108,"ui":109,"infra":110}')[inputs.stack] }}
+
+    steps:
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # GitHub runners have no fixed IP and SSH is closed to everyone else, so open port 22
+      # to this runner's IP only. The rule is removed in the last step even if the deploy fails.
+      - name: Allow this runner's IP on SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          runner_ip="$(curl -fsS https://api.ipify.org)"
+
+          if ! python3 -c '
+          import ipaddress
+          import sys
+
+          try:
+              ipaddress.IPv4Address(sys.argv[1])
+          except ipaddress.AddressValueError:
+              sys.exit(1)
+          ' "$runner_ip"; then
+            echo "Could not determine a valid IPv4 address." >&2
+            exit 1
+          fi
+          az network nsg rule create \
+            --resource-group "$AZURE_RESOURCE_GROUP" --nsg-name "$AZURE_NSG_NAME" \
+            --name "$NSG_RULE_NAME" --priority "$NSG_RULE_PRIORITY" --direction Inbound --access Allow \
+            --protocol Tcp --destination-port-ranges 22 \
+            --source-address-prefixes "$runner_ip" --output none
+          for _ in $(seq 1 12); do
+            if nc -z -w 5 "$DEPLOY_HOST" 22; then exit 0; fi
+            sleep 5
+          done
+          echo "SSH on the VM is still unreachable after opening the firewall." >&2
+          exit 1
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/deploy_key"
+          chmod 600 "$RUNNER_TEMP/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
+
+      # Only non-secret settings travel from GitHub (environment variables). Passwords and keys are
+      # Docker secrets that already exist on the VM (see scripts/create-secrets.sh).
+      # DEPLOY_IMAGE is the image the service's own pipeline asked for. The *_IMAGE environment variables
+      # are only used by the very first deployment of a stack; after that the running image is kept.
+      - name: Deploy stack on the ${{ inputs.environment }} VM
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          DEPLOY_BRANCH: ${{ inputs.environment }}
+          DEPLOY_SHA: ${{ inputs.deploy_sha }}
+          DEPLOY_STACK: ${{ inputs.stack }}
+          DEPLOY_IMAGE: ${{ inputs.image }}
+          SNIPPET_SERVICE_IMAGE: ${{ vars.SNIPPET_SERVICE_IMAGE }}
+          PERMISSION_SERVICE_IMAGE: ${{ vars.PERMISSION_SERVICE_IMAGE }}
+          PRINTSCRIPT_UI_IMAGE: ${{ vars.PRINTSCRIPT_UI_IMAGE }}
+          PRINTSCRIPT_ENGINE_IMAGE: ${{ vars.PRINTSCRIPT_ENGINE_IMAGE }}
+          SERVICE_POSTGRES_DB: ${{ vars.SERVICE_POSTGRES_DB }}
+          SERVICE_POSTGRES_USER: ${{ vars.SERVICE_POSTGRES_USER }}
+          PERMISSION_POSTGRES_DB: ${{ vars.PERMISSION_POSTGRES_DB }}
+          PERMISSION_POSTGRES_USER: ${{ vars.PERMISSION_POSTGRES_USER }}
+          AUTH0_DOMAIN: ${{ vars.AUTH0_DOMAIN }}
+          AUTH0_AUDIENCE: ${{ vars.AUTH0_AUDIENCE }}
+          AUTH0_M2M_CLIENT_ID: ${{ vars.AUTH0_M2M_CLIENT_ID }}
+          # this environment's own subdomain (nginx server_name; its certificate is issued for it)
+          DOMAIN: ${{ vars.DOMAIN }}
+          DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+          SYNTHETIC_CLIENT_ID: ${{ vars.SYNTHETIC_CLIENT_ID }}
+        run: |
+          {
+            for var in DEPLOY_PATH DEPLOY_BRANCH DEPLOY_SHA DEPLOY_STACK DEPLOY_IMAGE SNIPPET_SERVICE_IMAGE PERMISSION_SERVICE_IMAGE PRINTSCRIPT_UI_IMAGE PRINTSCRIPT_ENGINE_IMAGE SERVICE_POSTGRES_DB SERVICE_POSTGRES_USER PERMISSION_POSTGRES_DB PERMISSION_POSTGRES_USER AUTH0_DOMAIN AUTH0_AUDIENCE AUTH0_M2M_CLIENT_ID DOMAIN DEPLOY_ENVIRONMENT SYNTHETIC_CLIENT_ID; do
+              printf 'export %s=%q\n' "$var" "${!var}"
+            done
+            cat <<'REMOTE'
+          set -euo pipefail
+          cd "$DEPLOY_PATH"
+          git fetch --prune origin "$DEPLOY_BRANCH"
+          if [[ -n "$DEPLOY_SHA" ]]; then
+            git checkout --force --detach "$DEPLOY_SHA"
+          else
+            git checkout --force --detach FETCH_HEAD
+          fi
+          sudo -E scripts/deploy.sh "$DEPLOY_STACK"
+          REMOTE
+          } | ssh -i "$RUNNER_TEMP/deploy_key" -o IdentitiesOnly=yes \
+                 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+                 "$DEPLOY_USER@$DEPLOY_HOST" bash -s
+
+      - name: Close SSH to this runner
+        if: always()
+        run: |
+          az network nsg rule delete \
+            --resource-group "$AZURE_RESOURCE_GROUP" --nsg-name "$AZURE_NSG_NAME" \
+            --name "$NSG_RULE_NAME" --output none || true
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/deploy_key"

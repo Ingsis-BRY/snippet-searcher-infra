@@ -1,0 +1,120 @@
+name: Deploy service
+
+# Deploys one microservice (its own stack) with the image the caller asks for, leaving every other
+# stack untouched. Two ways in:
+#   - repository_dispatch (event type `deploy-service`), sent by a microservice repo once its image is
+#     published. Payload: {"service": "...", "image": "ghcr.io/ingsis-bry/<service>:<tag>", "environment": "dev|prod"}
+#   - workflow_dispatch, by hand. An empty image redeploys the stack with the image it is running now.
+# See README, "Continuous Deployment".
+
+on:
+  repository_dispatch:
+    types: [deploy-service]
+
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Service (or `infra` for the shared stack) to deploy
+        type: choice
+        required: true
+        options:
+          - snippet-service
+          - snippet-permission-service
+          - printscript-engine
+          - printscript-ui
+          - infra
+      environment:
+        description: Environment
+        type: choice
+        required: true
+        default: dev
+        options:
+          - dev
+          - prod
+      image:
+        description: "Full image reference, e.g. ghcr.io/ingsis-bry/printscript-ui:<sha>. Empty keeps the running image."
+        type: string
+        required: false
+
+permissions:
+  contents: read
+  id-token: write # OIDC login to Azure, no stored Azure password
+
+jobs:
+  # The dispatch payload comes from another repository: it is validated here and only ever handed to
+  # the shell through environment variables.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      stack: ${{ steps.validate.outputs.stack }}
+      image: ${{ steps.validate.outputs.image }}
+      environment: ${{ steps.validate.outputs.environment }}
+    steps:
+      - name: Validate the request
+        id: validate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SERVICE: ${{ github.event.client_payload.service || inputs.service }}
+          IMAGE: ${{ github.event.client_payload.image || inputs.image }}
+          ENVIRONMENT: ${{ github.event.client_payload.environment || inputs.environment }}
+        run: |
+          case "$SERVICE" in
+            snippet-service) stack=service ;;
+            snippet-permission-service) stack=permission ;;
+            printscript-engine) stack=engine ;;
+            printscript-ui) stack=ui ;;
+            infra)
+              if [[ "$EVENT_NAME" == repository_dispatch ]]; then
+                echo "The shared stack can only be deployed by hand." >&2
+                exit 1
+              fi
+              stack=infra
+              ;;
+            *)
+              echo "Unknown service." >&2
+              exit 1
+              ;;
+          esac
+
+          case "$ENVIRONMENT" in
+            dev | prod) ;;
+            *)
+              echo "environment must be dev or prod." >&2
+              exit 1
+              ;;
+          esac
+
+          if [[ "$stack" == infra ]]; then
+            if [[ -n "$IMAGE" ]]; then
+              echo "The shared stack takes no image." >&2
+              exit 1
+            fi
+          elif [[ -n "$IMAGE" ]]; then
+            # the image must be this service's own and immutable (a mutable tag would not be re-pulled)
+            pattern="^ghcr\.io/ingsis-bry/${SERVICE}:[A-Za-z0-9._-]+$"
+            if [[ ! "$IMAGE" =~ $pattern || "$IMAGE" == *:latest ]]; then
+              echo "image must be ghcr.io/ingsis-bry/${SERVICE}:<immutable tag> (not :latest)." >&2
+              exit 1
+            fi
+          elif [[ "$EVENT_NAME" == repository_dispatch ]]; then
+            echo "image is required." >&2
+            exit 1
+          fi
+
+          {
+            echo "stack=$stack"
+            echo "image=$IMAGE"
+            echo "environment=$ENVIRONMENT"
+          } >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: prepare
+    uses: ./.github/workflows/deploy-stack.yml
+    with:
+      environment: ${{ needs.prepare.outputs.environment }}
+      stack: ${{ needs.prepare.outputs.stack }}
+      image: ${{ needs.prepare.outputs.image }}
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write
