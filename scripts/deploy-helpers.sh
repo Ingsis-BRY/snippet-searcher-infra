@@ -46,13 +46,17 @@ require_networks() {
 # Picks the image a stack is deployed with, so that redeploying a stack (for example because its compose
 # file changed) never rolls the service back to a stale tag:
 #   1. DEPLOY_IMAGE, the tag the service's own pipeline asked for;
-#   2. the image the service is running right now;
-#   3. the variable itself, only used for the very first deployment (GitHub environment variable).
+#   2. the variable itself, only when USE_CONFIGURED_IMAGES=true (prod: the image variables of the GitHub
+#      environment are what gets promoted);
+#   3. the image the service is running right now;
+#   4. the variable itself, for the very first deployment (GitHub environment variable).
 resolve_image() {
     local var="$1" service="$2" running=""
     if [[ -n "${DEPLOY_IMAGE:-}" ]]; then
         printf -v "$var" '%s' "$DEPLOY_IMAGE"
         echo "$var: using the requested image ${!var}"
+    elif [[ "${USE_CONFIGURED_IMAGES:-}" == "true" && -n "${!var:-}" ]]; then
+        echo "$var: using the configured image ${!var}"
     else
         running="$(docker service inspect "$service" \
             --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' 2>/dev/null || true)"
