@@ -57,7 +57,7 @@ REDIS=$(docker ps -q -f name=snippet-searcher_redis)
 docker exec "$REDIS" redis-cli XINFO GROUPS snippet.analysis    # pending / lag per group
 docker exec "$REDIS" redis-cli XLEN snippet.analysis.dlq        # failed jobs
 docker exec "$REDIS" redis-cli XRANGE snippet.analysis.dlq - + COUNT 5
-docker service logs snippet-searcher_snippet-worker
+docker service logs snippet-service_snippet-worker
 ```
 
 ### Networking
@@ -249,7 +249,7 @@ the machine-to-machine application `Snippet Searcher Backend`
 
 Both services also need `NEW_RELIC_LICENSE_KEY` (secret).
 
-`snippet-worker` reuses `SNIPPET_SERVICE_IMAGE` and every `snippet-service` variable (shared through a YAML anchor in `swarm/compose.yml`). `REDIS_HOST` and `REDIS_PORT` are set in the compose file; no new variable has to be provided.
+`snippet-worker` reuses `SNIPPET_SERVICE_IMAGE` and every `snippet-service` variable (shared through a YAML anchor in `swarm/stacks/service.yml`). `REDIS_HOST` and `REDIS_PORT` are set in the compose file; no new variable has to be provided.
 
 Deployment also requires `SNIPPET_SERVICE_IMAGE`,
 `PERMISSION_SERVICE_IMAGE`, `PRINTSCRIPT_UI_IMAGE` and `PRINTSCRIPT_ENGINE_IMAGE`.
@@ -259,7 +259,7 @@ Deployment also requires `SNIPPET_SERVICE_IMAGE`,
 Passwords and keys are Docker secrets that already exist in the Swarm. They
 are created once per VM with `scripts/create-secrets.sh` (values are typed at
 a hidden prompt and go to Docker over stdin; nothing is written to a file or
-to the shell history). `swarm/compose.yml` declares them as `external` and
+to the shell history). The stack files in `swarm/stacks/` declare them as `external` and
 `scripts/deploy.sh` stops if one is missing. No `.env` file is used.
 
 | Secret | Mounted in | As | Description |
@@ -289,7 +289,7 @@ supplied at deploy time; in GitHub Actions they are the `vars` of the
 
 #### Stack variables reference
 
-`swarm/compose.yml` fails to render if any of these variables is missing. Secrets are listed above; `TLS_CERT_FILE` and `TLS_KEY_FILE` are only read on the first deployment.
+Each stack file in `swarm/stacks/` fails to render if any of these variables is missing. Secrets are listed above; `TLS_CERT_FILE` and `TLS_KEY_FILE` are only read on the first deployment.
 
 | Variable | Used by | Description |
 |---|---|---|
@@ -297,7 +297,7 @@ supplied at deploy time; in GitHub Actions they are the `vars` of the
 | `PERMISSION_SERVICE_IMAGE` | `snippet-permission-service` | Image reference, e.g. `ghcr.io/ingsis-bry/snippet-permission-service:<tag>` |
 | `PRINTSCRIPT_UI_IMAGE` | `printscript-ui` | Image reference, e.g. `ghcr.io/ingsis-bry/printscript-ui:<tag>` |
 | `PRINTSCRIPT_ENGINE_IMAGE` | `printscript-engine` | Image reference, e.g. `ghcr.io/ingsis-bry/printscript-engine:<tag>` |
-| `ENGINE_URL` | `snippet-service` | Set in `swarm/compose.yml` to `http://engine-proxy:80`; not provided by hand |
+| `ENGINE_URL` | `snippet-service` | Set in `swarm/stacks/service.yml` to `http://engine-proxy:80`; not provided by hand |
 | `SERVICE_POSTGRES_DB` | `snippet-service`, `snippet-service-db` | Snippet service database name |
 | `SERVICE_POSTGRES_USER` | `snippet-service`, `snippet-service-db` | Snippet service database user |
 | `PERMISSION_POSTGRES_DB` | `snippet-permission-service`, `snippet-permission-db` | Permission database name |
@@ -365,16 +365,72 @@ the application and its dependencies.
 
 ### Continuous Deployment
 
-Deployments run `scripts/deploy.sh` on the target VM over SSH:
+The system is split into independent Swarm stacks (`swarm/stacks/`), so a change in one microservice
+is deployed without touching the others:
+
+| Stack | File | Services |
+|---|---|---|
+| `snippet-searcher` (shared) | `infra.yml` | `nginx`, `redis`, both databases, `azurite`, `synthetic-check` |
+| `snippet-service` | `service.yml` | `snippet-service`, `snippet-worker` (same image) |
+| `snippet-permission` | `permission.yml` | `snippet-permission-service` |
+| `snippet-engine` | `engine.yml` | `printscript-engine`, `engine-proxy` |
+| `snippet-ui` | `ui.yml` | `printscript-ui` |
+
+The shared stack keeps the name `snippet-searcher` because the data volumes are named after the stack.
+All stacks use two external overlay networks (`snippet-network`, and the `--internal` `engine-network`),
+created once per VM by `scripts/create-networks.sh`; services still reach each other by short name.
+
+`scripts/deploy.sh <infra|service|permission|engine|ui>` deploys **one** stack on the VM over SSH,
+waits for that stack only, and takes a lock so two deployments on the same VM take turns. For an
+application stack the image is, in order: `DEPLOY_IMAGE` (the one requested), the image that is
+running now, or the `*_IMAGE` environment variable (first deployment only). Redeploying a stack
+therefore never rolls a service back to a stale tag.
 
 | Workflow | Target | Trigger |
 |---|---|---|
-| `.github/workflows/CD-dev.yml` | dev VM | Push to `dev` (a merged PR into `dev`), or manual dispatch |
+| `.github/workflows/CD-dev.yml` | dev VM | Push to `dev` (a merged PR into `dev`), or manual dispatch. Deploys every stack, in order; unchanged stacks are not restarted |
 | `.github/workflows/CD-prod.yml` | prod VM | A pull request from `dev` into `prod` is **merged**. PRs from other branches, unmerged PRs and direct pushes never deploy |
+| `.github/workflows/deploy-service.yml` | dev or prod VM | `repository_dispatch` (event `deploy-service`) from a microservice repo, or manual dispatch. Deploys **only that service's stack** with the requested image |
+| `.github/workflows/deploy-stack.yml` | | Reusable job (Azure login, temporary SSH rule, deploy of one stack) called by `deploy-service.yml` |
 
 Each workflow uses the GitHub Environment of the same name (`dev`, `prod`;
 add required reviewers to `prod`) and never runs two deployments of the same
-environment at once. The VM checks out the exact commit that triggered the run.
+environment at once. The VM checks out the exact commit that triggered the run (for
+`deploy-service.yml`, the tip of the branch named like the environment, `dev` or `prod`).
+
+#### Deploying one microservice
+
+Manually: Actions, "Deploy service", choose the service, the environment and the image
+(`ghcr.io/ingsis-bry/<service>:<tag>`). An empty image redeploys the stack with the image it is running.
+That is also the rollback: run it again with an older `:<sha>` tag.
+
+From a microservice repo (to be added to that repo's publish workflow, after the image is pushed):
+
+```bash
+gh api repos/Ingsis-BRY/snippet-infra/dispatches \
+  -f event_type=deploy-service \
+  -f 'client_payload[service]=snippet-service' \
+  -f 'client_payload[image]=ghcr.io/ingsis-bry/snippet-service:<immutable-tag>' \
+  -f 'client_payload[environment]=dev'
+```
+
+`service` is one of `snippet-service`, `snippet-permission-service`, `printscript-engine`,
+`printscript-ui`. The workflow rejects any other service, an image that is not that service's own
+`ghcr.io/ingsis-bry/<service>:<tag>`, a `:latest` tag (Swarm would not re-pull it) and anything but
+`dev` or `prod`. The call needs a token with write access to this repository (a fine-grained token
+limited to it, stored as a secret in the microservice repo). Deploys to `prod` wait for the approval
+of the `prod` environment.
+
+#### One-time migration from the single `snippet-searcher` stack
+
+Per VM, dev first. Expect a short outage: every service is recreated on the new external networks.
+
+1. `sudo scripts/create-networks.sh`.
+2. Remove the application services from the old stack (the databases and their volumes stay):
+   `docker service rm snippet-searcher_snippet-service snippet-searcher_snippet-worker snippet-searcher_snippet-permission-service snippet-searcher_printscript-engine snippet-searcher_engine-proxy snippet-searcher_printscript-ui`.
+3. `sudo -E scripts/deploy.sh infra` (recreates the shared services on the external network).
+4. `sudo -E scripts/deploy.sh service`, then `permission`, `engine` and `ui`.
+5. Remove the old, now empty networks: `docker network rm snippet-searcher_snippet-network snippet-searcher_engine-network`.
 
 Environment **secrets**: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`
 (a dedicated deploy key, not a personal one) and `DEPLOY_KNOWN_HOSTS`
@@ -394,10 +450,10 @@ old one keeps serving, which stops only once the new one is healthy), one task a
 between them, a 90 s monitor and `failure_action: rollback`. The engine never drops below its 2
 replicas during a deploy. Start periods are generous (90 s engine, 180 s Spring services) because on a
 small VM several JVMs start at the same time. The script then waits (up to `CONVERGE_TIMEOUT`, 900 s)
-for every service to settle and **fails the
+for every service of the stack to settle and **fails the
 deployment** if one rolled back or isn't running all its replicas, which marks the GitHub run red.
-To roll back by hand, redeploy an older commit (`workflow_dispatch` on CD-dev) or point the image
-variables at an older `:<sha>` tag.
+To roll back by hand, run "Deploy service" with an older `:<sha>` tag, or redeploy an older commit
+(`workflow_dispatch` on CD-dev). The `*_IMAGE` environment variables are only used for the first deployment of a stack.
 
 Order matters when a change spans repositories: merge and publish the service images first, then
 the infra change that depends on them (for example, healthchecks need images with `/actuator/health`).
@@ -504,7 +560,9 @@ failures; 61 req/s at 80 users with p95 140 ms; p95 flat at 140 to 150 ms across
 │   └── workflows/
 │       ├── CD-dev.yml
 │       ├── CD-prod.yml
-│       └── CI.yml
+│       ├── CI.yml
+│       ├── deploy-service.yml
+│       └── deploy-stack.yml
 ├── docs/
 │   ├── azure-vm-setup.md
 │   └── azure-vm.env.example
@@ -514,7 +572,8 @@ failures; 61 req/s at 80 users with p95 140 ms; p95 flat at 140 to 150 ms across
 │   │   └── engine-proxy.conf
 │   ├── synthetic/
 │   │   └── check.sh
-│   └── compose.yml
+│   └── stacks/
+│       ├── infra.yml, service.yml, permission.yml, engine.yml, ui.yml
 ├── load/
 │   ├── locustfile.py, demo.py, extended.py, demo.ps1, requirements.txt
 │   └── reports/
@@ -525,8 +584,10 @@ failures; 61 req/s at 80 users with p95 140 ms; p95 flat at 140 to 150 ms across
 ├── scripts/
 │   ├── certbot-deploy-hook.sh
 │   ├── certbot-init.sh
+│   ├── create-networks.sh
 │   ├── create-secrets.sh
-│   ├── deploy.sh
+│   ├── deploy.sh                 (deploys one stack)
+│   ├── deploy-helpers.sh         (functions sourced by deploy.sh and create-networks.sh)
 │   └── newrelic-alerts.sh
 ├── .gitattributes
 ├── .gitignore
