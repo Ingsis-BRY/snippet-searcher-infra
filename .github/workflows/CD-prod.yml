@@ -88,6 +88,8 @@ jobs:
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
           DEPLOY_BRANCH: prod
           DEPLOY_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          # prod deploys the image variables of this environment (what is promoted), not the running image
+          USE_CONFIGURED_IMAGES: "true"
           SNIPPET_SERVICE_IMAGE: ${{ vars.SNIPPET_SERVICE_IMAGE }}
           PERMISSION_SERVICE_IMAGE: ${{ vars.PERMISSION_SERVICE_IMAGE }}
           PRINTSCRIPT_UI_IMAGE: ${{ vars.PRINTSCRIPT_UI_IMAGE }}
@@ -105,7 +107,7 @@ jobs:
           SYNTHETIC_CLIENT_ID: ${{ vars.SYNTHETIC_CLIENT_ID }}
         run: |
           {
-            for var in DEPLOY_PATH DEPLOY_BRANCH DEPLOY_SHA SNIPPET_SERVICE_IMAGE PERMISSION_SERVICE_IMAGE PRINTSCRIPT_UI_IMAGE PRINTSCRIPT_ENGINE_IMAGE SERVICE_POSTGRES_DB SERVICE_POSTGRES_USER PERMISSION_POSTGRES_DB PERMISSION_POSTGRES_USER AUTH0_DOMAIN AUTH0_AUDIENCE AUTH0_M2M_CLIENT_ID DOMAIN DEPLOY_ENVIRONMENT SYNTHETIC_CLIENT_ID; do
+            for var in DEPLOY_PATH DEPLOY_BRANCH DEPLOY_SHA USE_CONFIGURED_IMAGES SNIPPET_SERVICE_IMAGE PERMISSION_SERVICE_IMAGE PRINTSCRIPT_UI_IMAGE PRINTSCRIPT_ENGINE_IMAGE SERVICE_POSTGRES_DB SERVICE_POSTGRES_USER PERMISSION_POSTGRES_DB PERMISSION_POSTGRES_USER AUTH0_DOMAIN AUTH0_AUDIENCE AUTH0_M2M_CLIENT_ID DOMAIN DEPLOY_ENVIRONMENT SYNTHETIC_CLIENT_ID; do
               printf 'export %s=%q\n' "$var" "${!var}"
             done
             cat <<'REMOTE'
@@ -113,7 +115,11 @@ jobs:
           cd "$DEPLOY_PATH"
           git fetch --prune origin "$DEPLOY_BRANCH"
           git checkout --force --detach "$DEPLOY_SHA"
-          sudo -E scripts/deploy.sh
+          # one stack at a time; an unchanged stack keeps its running image and is not restarted.
+          # New images of a single microservice are deployed by deploy-service.yml instead.
+          for stack in infra service permission engine ui; do
+            sudo -E scripts/deploy.sh "$stack"
+          done
           REMOTE
           } | ssh -i "$RUNNER_TEMP/deploy_key" -o IdentitiesOnly=yes \
                  -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \

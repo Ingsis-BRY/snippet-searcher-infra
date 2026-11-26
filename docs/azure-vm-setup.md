@@ -446,20 +446,23 @@ docker context use snippet-$ENV            # make it the default (docker context
 2. Issue the TLS certificate by following the Let's Encrypt instructions in
    [the main README](../README.md).
 3. Authenticate Docker with GHCR (section 9).
-4. Deploy the stack for the first time by hand, with a self-signed
-   certificate for the bootstrap (see TLS in the main README) and the
-   non-secret variables exported in your shell:
+4. Create the shared overlay networks, then deploy the stacks for the first time by hand, the shared
+   one first with a self-signed certificate for the bootstrap (see TLS in the main README), and the
+   non-secret variables (including the four `*_IMAGE` ones) exported in your shell:
 
 ```bash
-sudo -E TLS_CERT_FILE=<cert> TLS_KEY_FILE=<key> ./scripts/deploy.sh
+sudo scripts/create-networks.sh
+sudo -E TLS_CERT_FILE=<cert> TLS_KEY_FILE=<key> ./scripts/deploy.sh infra
+for stack in service permission engine ui; do sudo -E ./scripts/deploy.sh "$stack"; done
 ```
 Later deployments are done by GitHub Actions.
 
 Verify that all services are running:
 ```bash
-docker stack services snippet-searcher
+docker stack ls
+docker service ls
 ```
-All services should report 1/1 replicas.
+All services should report their desired replicas (1/1, the engine 2/2).
 
 ## Security notes
 
