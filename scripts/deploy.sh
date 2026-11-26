@@ -46,6 +46,10 @@ if [[ ! "$DOMAIN" =~ ^[a-z0-9.-]+$ ]]; then
 fi
 sed "s/\${DOMAIN}/$DOMAIN/g" "$NGINX_TEMPLATE_FILE" > "$NGINX_CONFIG_FILE"
 
+# snippet-service's CORS allowlist: the UI's own origin in this environment
+CORS_ALLOWED_ORIGINS="https://$DOMAIN"
+export CORS_ALLOWED_ORIGINS
+
 NGINX_CONFIG_VERSION="$(sha256sum "$NGINX_CONFIG_FILE" | cut -c1-12)"
 export NGINX_CONFIG_VERSION
 

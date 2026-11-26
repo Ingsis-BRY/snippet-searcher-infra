@@ -56,6 +56,7 @@ jobs:
           AUTH0_DOMAIN: ci-placeholder.auth0.com
           AUTH0_AUDIENCE: https://snippet-searcher-api
           AUTH0_M2M_CLIENT_ID: ci-placeholder
+          CORS_ALLOWED_ORIGINS: https://ci.example.org
 
       - name: Validate Nginx configuration
         run: >
