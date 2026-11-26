@@ -2,6 +2,7 @@
 # proxy's config names the engine's DNS entry and both sit on the internal engine-network), so they
 # deploy together. Both networks are external and created once by scripts/create-networks.sh;
 # engine-network is `--internal`, so the engine (which runs untrusted code) has no outbound access.
+# Its New Relic agent gets out through nr-egress, a proxy that only opens HTTPS tunnels to New Relic.
 
 x-rolling-update: &rolling-update
   update_config:
@@ -14,6 +15,18 @@ x-rolling-update: &rolling-update
     parallelism: 1
     order: start-first
 
+# Starts the engine with the New Relic agent, its license key read from the secret file (the agent only
+# reads it from the environment). Without the agent in the image or without the key it starts plain, so a
+# deploy never breaks on an older image.
+x-engine-entrypoint: &engine-entrypoint
+  - sh
+  - -c
+  - >-
+    if [ -f /app/newrelic/newrelic.jar ] && [ -s /run/secrets/NEW_RELIC_LICENSE_KEY ]; then
+    export NEW_RELIC_LICENSE_KEY="$$(cat /run/secrets/NEW_RELIC_LICENSE_KEY)";
+    exec java -javaagent:/app/newrelic/newrelic.jar -jar /app/app.jar; fi;
+    exec java -jar /app/app.jar
+
 services:
   # The engine runs untrusted code. `docker stack deploy` ignores security_opt
   # (no-new-privileges) and pids limits are not reliably supported on the VM's
@@ -21,8 +34,18 @@ services:
   # ExitOnOutOfMemoryError, the memory/CPU limits and the restart policy below.
   printscript-engine:
     image: "${PRINTSCRIPT_ENGINE_IMAGE:?PRINTSCRIPT_ENGINE_IMAGE must be set}"
+    entrypoint: *engine-entrypoint
     environment:
       LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
+      # its own APM entity; snippet-service's agent passes the trace on, so an engine call is one more hop
+      # of the same distributed trace (the X-Trace-Id the API returns)
+      NEW_RELIC_APP_NAME: "snippet-engine-${DEPLOY_ENVIRONMENT:-dev}"
+      NEW_RELIC_LOG_FILE_NAME: "STDOUT"
+      NEW_RELIC_PROXY_HOST: nr-egress
+      NEW_RELIC_PROXY_PORT: "3128"
+    secrets:
+      - source: new-relic-license-key
+        target: NEW_RELIC_LICENSE_KEY
     read_only: true
     cap_drop:
       - ALL
@@ -36,7 +59,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
-      start_period: 90s
+      start_period: 120s
     stop_grace_period: 30s
     networks:
       - engine-network
@@ -48,7 +71,8 @@ services:
       resources:
         limits:
           cpus: "1"
-          memory: 512M
+          # 75 % heap (JAVA_TOOL_OPTIONS in the image) plus the New Relic agent's own memory
+          memory: 640M
       # zero downtime: a third replica starts, and an old one stops only once the new one is healthy,
       # so the engine never drops below 2 replicas during a deploy
       update_config:
@@ -84,10 +108,44 @@ services:
       restart_policy:
         condition: any
 
+  # The engine's only way out: an HTTPS (CONNECT) proxy that allows New Relic hosts and refuses the rest
+  # (swarm/egress/squid.conf). It sits on engine-network and on snippet-network, which has outbound access.
+  nr-egress:
+    image: ubuntu/squid:6.6-24.04_beta
+    configs:
+      - source: nr-egress-config
+        target: /etc/squid/squid.conf
+    # the image has no curl or wget; bash opening the port is enough
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/3128"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+    networks:
+      - engine-network
+      - snippet-network
+    deploy:
+      <<: *rolling-update
+      replicas: 1
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+      restart_policy:
+        condition: any
+
 configs:
+  nr-egress-config:
+    name: "nr-egress-config-${NR_EGRESS_CONFIG_VERSION:?NR_EGRESS_CONFIG_VERSION must be set}"
+    file: ../egress/squid.conf
   engine-proxy-config:
     name: "engine-proxy-config-${ENGINE_PROXY_CONFIG_VERSION:?ENGINE_PROXY_CONFIG_VERSION must be set}"
     file: ../nginx/engine-proxy.conf
+
+secrets:
+  new-relic-license-key:
+    external: true
 
 networks:
   snippet-network:

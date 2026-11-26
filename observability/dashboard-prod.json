@@ -415,7 +415,7 @@
                 "accountIds": [
                   8743599
                 ],
-                "query": "SELECT count(*) FROM Log WHERE entity.name IN ('snippet-service-prod', 'snippet-worker-prod', 'snippet-permission-service-prod') FACET entity.name, level TIMESERIES"
+                "query": "SELECT count(*) FROM Log WHERE entity.name IN ('snippet-service-prod', 'snippet-worker-prod', 'snippet-permission-service-prod', 'snippet-engine-prod') FACET entity.name, level TIMESERIES"
               }
             ],
             "platformOptions": {
@@ -447,7 +447,7 @@
                 "accountIds": [
                   8743599
                 ],
-                "query": "SELECT average(apm.service.memory.heap.used) FROM Metric WHERE appName IN ('snippet-service-prod', 'snippet-worker-prod', 'snippet-permission-service-prod') FACET appName TIMESERIES"
+                "query": "SELECT average(apm.service.memory.heap.used) FROM Metric WHERE appName IN ('snippet-service-prod', 'snippet-worker-prod', 'snippet-permission-service-prod', 'snippet-engine-prod') FACET appName TIMESERIES"
               }
             ],
             "platformOptions": {
@@ -645,7 +645,7 @@
                 "accountIds": [
                   8743599
                 ],
-                "query": "SELECT average(apm.service.cpu.usertime.utilization) * 100 FROM Metric WHERE appName IN ('snippet-service-prod', 'snippet-worker-prod', 'snippet-permission-service-prod') FACET appName TIMESERIES"
+                "query": "SELECT average(apm.service.cpu.usertime.utilization) * 100 FROM Metric WHERE appName IN ('snippet-service-prod', 'snippet-worker-prod', 'snippet-permission-service-prod', 'snippet-engine-prod') FACET appName TIMESERIES"
               }
             ],
             "platformOptions": {
