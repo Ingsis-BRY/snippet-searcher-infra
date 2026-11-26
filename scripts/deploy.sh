@@ -58,14 +58,7 @@ case "$1" in
 
         # Each environment has its own DuckDNS subdomain (and certificate). nginx's own $variables are left alone:
         # only the literal ${DOMAIN} placeholder is replaced.
-        if [[ -z "${DOMAIN:-}" ]]; then
-            DOMAIN="snippet-searcher-bry.duckdns.org"
-            echo "Warning: DOMAIN is not set, using $DOMAIN. Set the DOMAIN variable of this GitHub environment." >&2
-        fi
-        if [[ ! "$DOMAIN" =~ ^[a-z0-9.-]+$ ]]; then
-            echo "Error: DOMAIN must be a plain host name, got '$DOMAIN'." >&2
-            exit 1
-        fi
+        resolve_domain
         sed "s/\${DOMAIN}/$DOMAIN/g" "$NGINX_TEMPLATE_FILE" > "$NGINX_CONFIG_FILE"
 
         NGINX_CONFIG_VERSION="$(sha256sum "$NGINX_CONFIG_FILE" | cut -c1-12)"
@@ -104,6 +97,10 @@ case "$1" in
     service)
         require_networks "$SNIPPET_NETWORK"
         require_secrets service-postgres-password azure-storage-connection-string-v2 auth0-m2m-client-secret new-relic-license-key
+        # snippet-service's CORS allowlist: the UI's own origin in this environment
+        resolve_domain
+        CORS_ALLOWED_ORIGINS="https://$DOMAIN"
+        export CORS_ALLOWED_ORIGINS
         resolve_image SNIPPET_SERVICE_IMAGE "${STACK_NAME}_snippet-service"
         ;;
 

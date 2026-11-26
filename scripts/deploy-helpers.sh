@@ -29,6 +29,19 @@ require_secrets() {
     fi
 }
 
+# resolve_domain: this environment's public host name (DOMAIN, the DuckDNS subdomain its certificate is
+# issued for). Falls back to the dev host with a warning, and must be a plain host name.
+resolve_domain() {
+    if [[ -z "${DOMAIN:-}" ]]; then
+        DOMAIN="snippet-searcher-bry.duckdns.org"
+        echo "Warning: DOMAIN is not set, using $DOMAIN. Set the DOMAIN variable of this GitHub environment." >&2
+    fi
+    if [[ ! "$DOMAIN" =~ ^[a-z0-9.-]+$ ]]; then
+        echo "Error: DOMAIN must be a plain host name, got '$DOMAIN'." >&2
+        exit 1
+    fi
+}
+
 # require_networks <network>...: the external networks must exist before any stack that uses them.
 require_networks() {
     local missing=() network
