@@ -24,7 +24,7 @@ jobs:
         run: for script in scripts/*.sh; do bash -n "$script"; done && sh -n swarm/synthetic/check.sh
 
       - name: Lint scripts
-        run: docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:v0.10.0 scripts/*.sh swarm/synthetic/check.sh
+        run: docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:v0.10.0 -x scripts/*.sh swarm/synthetic/check.sh
 
       # deploy.sh does the same with each environment's DOMAIN
       - name: Render nginx configuration
@@ -38,7 +38,7 @@ jobs:
           -keyout /tmp/tls/tls_key -out /tmp/tls/tls_cert
 
       - name: Validate Swarm configuration
-        run: docker compose -f swarm/compose.yml config -q
+        run: for stack in infra service permission engine ui; do docker compose -f "swarm/stacks/$stack.yml" config -q; done
         env:
           SNIPPET_SERVICE_IMAGE: ghcr.io/ingsis-bry/snippet-service:latest
           NGINX_CONFIG_VERSION: ci-placeholder
@@ -56,6 +56,7 @@ jobs:
           AUTH0_DOMAIN: ci-placeholder.auth0.com
           AUTH0_AUDIENCE: https://snippet-searcher-api
           AUTH0_M2M_CLIENT_ID: ci-placeholder
+          CORS_ALLOWED_ORIGINS: https://ci.example.org
 
       - name: Validate Nginx configuration
         run: >

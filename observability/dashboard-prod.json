@@ -1,0 +1,660 @@
+{
+  "name": "Snippet Searcher (prod)",
+  "description": "Tráfico, latencia, errores, synthetic check y prueba de carga del entorno prod.",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "Tiempo real",
+      "description": null,
+      "widgets": [
+        {
+          "title": "Requests por minuto (últimos 5 min)",
+          "layout": {
+            "column": 1,
+            "row": 1,
+            "width": 3,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT rate(count(*), 1 minute) AS 'req/min' FROM Transaction WHERE appName = 'snippet-service-prod' SINCE 5 minutes ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Latencia p95 (últimos 5 min)",
+          "layout": {
+            "column": 4,
+            "row": 1,
+            "width": 3,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT percentile(duration * 1000, 95) AS 'p95 ms' FROM Transaction WHERE appName = 'snippet-service-prod' SINCE 5 minutes ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Tasa de error (últimos 5 min)",
+          "layout": {
+            "column": 7,
+            "row": 1,
+            "width": 3,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT percentage(count(*), WHERE error IS true) AS 'error %' FROM Transaction WHERE appName = 'snippet-service-prod' SINCE 5 minutes ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Synthetic check (último)",
+          "layout": {
+            "column": 10,
+            "row": 1,
+            "width": 3,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT latest(snippet_searcher.synthetic.success) AS 'OK (1) / falla (0)' FROM Metric WHERE environment = 'prod' SINCE 5 minutes ago"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Tráfico por origen (req/min)",
+          "layout": {
+            "column": 1,
+            "row": 4,
+            "width": 6,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.area"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT rate(count(*), 1 minute) FROM Transaction WHERE appName = 'snippet-service-prod' FACET CASES(WHERE request.headers.userAgent LIKE '%snippet-searcher-locust%' AS 'Locust', WHERE request.headers.userAgent LIKE '%Cypress%' AS 'Cypress', WHERE request.headers.userAgent LIKE 'curl%' AS 'Synthetic check', WHERE request.headers.userAgent IS NOT NULL AS 'Usuarios') TIMESERIES"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Latencia p50 / p95 / p99 (ms)",
+          "layout": {
+            "column": 7,
+            "row": 4,
+            "width": 6,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT percentile(duration * 1000, 50, 95, 99) FROM Transaction WHERE appName = 'snippet-service-prod' TIMESERIES"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Endpoints: llamadas y tiempos",
+          "layout": {
+            "column": 1,
+            "row": 7,
+            "width": 6,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.table"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT count(*) AS 'llamadas', average(duration * 1000) AS 'prom ms', percentile(duration * 1000, 95) AS 'p95 ms', percentage(count(*), WHERE error IS true) AS 'error %' FROM Transaction WHERE appName = 'snippet-service-prod' FACET name LIMIT 20"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Errores por endpoint",
+          "layout": {
+            "column": 7,
+            "row": 7,
+            "width": 6,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT count(*) FROM Transaction WHERE appName = 'snippet-service-prod' AND error IS true FACET name TIMESERIES"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Dónde se va el tiempo (ms promedio por request)",
+          "layout": {
+            "column": 1,
+            "row": 10,
+            "width": 6,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT average(databaseDuration * 1000) AS 'Postgres', average(externalDuration * 1000) AS 'Servicios externos (engine, permisos, Auth0)', average(duration * 1000) AS 'Total' FROM Transaction WHERE appName = 'snippet-service-prod' TIMESERIES"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Llamadas a otros servicios (ms promedio)",
+          "layout": {
+            "column": 7,
+            "row": 10,
+            "width": 6,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT average(duration.ms) FROM Span WHERE appName = 'snippet-service-prod' AND span.kind = 'client' FACET peer.hostname TIMESERIES"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Synthetic check: éxito y duración",
+          "layout": {
+            "column": 1,
+            "row": 13,
+            "width": 6,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT latest(snippet_searcher.synthetic.success) AS 'éxito', average(snippet_searcher.synthetic.duration_ms) / 1000 AS 'duración (s)' FROM Metric WHERE environment = 'prod' TIMESERIES 1 minute"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "permission-service: req/min y p95 (ms)",
+          "layout": {
+            "column": 7,
+            "row": 13,
+            "width": 6,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT rate(count(*), 1 minute) AS 'req/min', percentile(duration * 1000, 95) AS 'p95 ms' FROM Transaction WHERE appName = 'snippet-permission-service-prod' TIMESERIES"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Logs por servicio y nivel",
+          "layout": {
+            "column": 1,
+            "row": 16,
+            "width": 6,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.area"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT count(*) FROM Log WHERE entity.name IN ('snippet-service-prod', 'snippet-worker-prod', 'snippet-permission-service-prod') FACET entity.name, level TIMESERIES"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Memoria heap usada (MB)",
+          "layout": {
+            "column": 7,
+            "row": 16,
+            "width": 6,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT average(apm.service.memory.heap.used) FROM Metric WHERE appName IN ('snippet-service-prod', 'snippet-worker-prod', 'snippet-permission-service-prod') FACET appName TIMESERIES"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Prueba de carga",
+      "description": null,
+      "widgets": [
+        {
+          "title": "Locust: req/min",
+          "layout": {
+            "column": 1,
+            "row": 1,
+            "width": 6,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.area"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT rate(count(*), 1 minute) FROM Transaction WHERE appName = 'snippet-service-prod' AND request.headers.userAgent = 'snippet-searcher-locust' TIMESERIES"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Locust: latencia p50 / p95 (ms)",
+          "layout": {
+            "column": 7,
+            "row": 1,
+            "width": 6,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT percentile(duration * 1000, 50, 95) FROM Transaction WHERE appName = 'snippet-service-prod' AND request.headers.userAgent = 'snippet-searcher-locust' TIMESERIES"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Locust: p95 por endpoint (ms)",
+          "layout": {
+            "column": 1,
+            "row": 4,
+            "width": 6,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT percentile(duration * 1000, 95) FROM Transaction WHERE appName = 'snippet-service-prod' AND request.headers.userAgent = 'snippet-searcher-locust' FACET name TIMESERIES"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Locust: errores",
+          "layout": {
+            "column": 7,
+            "row": 4,
+            "width": 6,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT count(*) FROM Transaction WHERE appName = 'snippet-service-prod' AND request.headers.userAgent = 'snippet-searcher-locust' AND error IS true FACET name TIMESERIES"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "Usuarios reales mientras corre la carga: p95 (ms)",
+          "layout": {
+            "column": 1,
+            "row": 7,
+            "width": 6,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT percentile(duration * 1000, 95) FROM Transaction WHERE appName = 'snippet-service-prod' AND request.headers.userAgent NOT LIKE '%locust%' TIMESERIES"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        },
+        {
+          "title": "CPU de los servicios (%)",
+          "layout": {
+            "column": 7,
+            "row": 7,
+            "width": 6,
+            "height": 3
+          },
+          "linkedEntityGuids": null,
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "facet": {
+              "showOtherSeries": false
+            },
+            "legend": {
+              "enabled": true
+            },
+            "nrqlQueries": [
+              {
+                "accountIds": [
+                  8743599
+                ],
+                "query": "SELECT average(apm.service.cpu.usertime.utilization) * 100 FROM Metric WHERE appName IN ('snippet-service-prod', 'snippet-worker-prod', 'snippet-permission-service-prod') FACET appName TIMESERIES"
+              }
+            ],
+            "platformOptions": {
+              "ignoreTimeRange": false
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variables": []
+}

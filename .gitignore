@@ -67,3 +67,9 @@ id_ecdsa*
 !*.pub
 .azure/
 swarm/nginx/default.rendered.conf
+
+### Load test credentials
+load/client_secret
+__pycache__/
+load/results/
+load/.venv/
