@@ -306,6 +306,7 @@ supplied at deploy time; in GitHub Actions they are the `vars` of the
 | `AUTH0_AUDIENCE` | `snippet-service`, `snippet-permission-service` | Auth0 API identifier |
 | `AUTH0_M2M_CLIENT_ID` | `snippet-service` | Auth0 Management API M2M client ID |
 | `DOMAIN` | `nginx` (rendered by `deploy.sh`) | This environment's public host: `snippet-searcher-bry.duckdns.org` (dev), `snippet-searcher-bry-prod.duckdns.org` (prod). Defaults to `snippet-searcher-bry.duckdns.org` with a warning |
+| `CORS_ALLOWED_ORIGINS` | `snippet-service`, `snippet-worker` | Browser origins allowed by CORS. Set by `deploy.sh` to `https://$DOMAIN`, so each environment only allows its own UI; don't set it by hand |
 | `DEPLOY_ENVIRONMENT` | New Relic app names, `synthetic-check` | `dev` or `prod`; set by the CD workflow |
 | `SYNTHETIC_CLIENT_ID` | `synthetic-check` | Client ID of the Auth0 M2M application authorized for the API (`read:snippets`, `write:snippets`) |
 | `SYNTHETIC_SCRIPT_VERSION` | `synthetic-check` | Computed by `scripts/deploy.sh`; do not set manually |
