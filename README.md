@@ -32,6 +32,7 @@ The initial Swarm stack includes the following services:
 | `snippet-service` | `$SNIPPET_SERVICE_IMAGE` (e.g. `ghcr.io/ingsis-bry/snippet-service:<tag>`) | Spring Boot application |
 | `printscript-engine` | `$PRINTSCRIPT_ENGINE_IMAGE` (e.g. `ghcr.io/ingsis-bry/printscript-engine:<tag>`) | PrintScript engine (validate and interactive run), 2 replicas, internal only |
 | `engine-proxy` | `nginx:1.28-alpine` | Internal proxy that picks the engine by the `X-Language` header and spreads requests over its replicas |
+| `nr-egress` | `ubuntu/squid:6.6-24.04_beta` | The engine's only way out: an HTTPS proxy that lets its New Relic agent reach New Relic and refuses every other host |
 | `printscript-ui` | `$PRINTSCRIPT_UI_IMAGE` (e.g. `ghcr.io/ingsis-bry/printscript-ui:<tag>`) | React/Vite frontend served by its own Nginx |
 | `snippet-worker` | `$SNIPPET_SERVICE_IMAGE` (same image, Spring profile `worker`) | Background consumer of the Redis stream: lint, format, run tests, re-validate on parser upgrade. No HTTP server, no published ports |
 | `redis` | `redis:7.4-alpine` | Redis Streams broker (AOF persistence), internal only |
@@ -111,6 +112,13 @@ and `printscript-engine` sit on the internal overlay network
 neither publishes ports. `printscript-engine` uses `endpoint_mode: dnsrr`
 so DNS returns one address per replica and the proxy's `resolve` and
 `proxy_next_upstream` work per replica.
+
+`engine-network` is `--internal`: the engine runs code written by users, so it
+has no outbound access. Its New Relic agent reaches New Relic through
+`nr-egress` (`NEW_RELIC_PROXY_HOST`), a Squid proxy on both networks whose
+config (`swarm/egress/squid.conf`, a Swarm config versioned by
+`NR_EGRESS_CONFIG_VERSION`) only opens HTTPS tunnels to `*.newrelic.com` and
+`*.nr-data.net`; anything else, user code included, gets a 403.
 
 The proxy config is `swarm/nginx/engine-proxy.conf`, a byte-identical copy
 of `nginx/engine-proxy.conf` in the `printscript-engine` repo (the source of
@@ -268,7 +276,7 @@ to the shell history). The stack files in `swarm/stacks/` declare them as `exter
 | `permission-postgres-password` | `snippet-permission-service`, `snippet-permission-db` | `POSTGRES_PASSWORD` / `postgres_password` | Permission database password |
 | `azure-storage-connection-string-v2` | `snippet-service`, `snippet-worker` | `azure.storage.connection-string` | Azure Blob (Azurite) connection string |
 | `auth0-m2m-client-secret` | `snippet-service`, `snippet-worker` | `AUTH0_M2M_CLIENT_SECRET` | Secret of the Auth0 Management API M2M application (user search) |
-| `new-relic-license-key` | `snippet-service`, `snippet-worker`, `snippet-permission-service`, `synthetic-check` | `NEW_RELIC_LICENSE_KEY` | New Relic ingest license key |
+| `new-relic-license-key` | `snippet-service`, `snippet-worker`, `snippet-permission-service`, `printscript-engine`, `synthetic-check` | `NEW_RELIC_LICENSE_KEY` | New Relic ingest license key |
 | `synthetic-client-secret` | `synthetic-check` | `SYNTHETIC_CLIENT_SECRET` | Secret of the Auth0 M2M application the synthetic check logs in with |
 
 The Spring services read them through `SPRING_CONFIG_IMPORT=configtree:/run/secrets/`:
@@ -487,16 +495,19 @@ Azure identity can only edit security rules of that one NSG; see
 
 ## Observability
 
-- **APM and logs:** the New Relic Java agent runs in `snippet-service`, `snippet-worker` and
-  `snippet-permission-service`, with app names suffixed by environment (`snippet-service-dev`,
+- **APM and logs:** the New Relic Java agent runs in `snippet-service`, `snippet-worker`,
+  `snippet-permission-service` and `printscript-engine`, with app names suffixed by environment (`snippet-service-dev`,
   `snippet-service-prod`, ...). Their logs go to stdout as JSON (Elastic Common Schema,
   `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`) and the agent forwards them.
 - **Correlation:** Micrometer Tracing gives each request a `traceId` that appears in every log line
   and travels to `snippet-permission-service` and the engine in the W3C `traceparent` header. Jobs
   sent to the worker through Redis carry it too: the worker logs it as `jobTraceId` (its own calls
   get their own `traceId`), so searching one id finds a change from the API to the background work.
-- **The engine** has no agent: it runs on an internal network with no internet access, by design.
-  It is observed through `snippet-service`'s external calls to `engine-proxy` and its JSON logs.
+- **The engine** (`snippet-engine-dev` / `-prod`) runs on an internal network with no internet access,
+  by design; its agent reports through the `nr-egress` proxy (see Engine and interactive run).
+  `snippet-service`'s agent passes the trace on to it, so a failure inside the engine shows up in New
+  Relic as one more hop of the same distributed trace: searching the `X-Trace-Id` the API returned
+  finds the API transaction, the engine's transaction and both services' logs.
 - **Synthetic check:** the `synthetic-check` service creates, reads and deletes a snippet through
   the API every minute, logged in as an Auth0 machine-to-machine application, and sends
   `snippet_searcher.synthetic.success` and `snippet_searcher.synthetic.duration_ms` to New Relic
@@ -579,6 +590,8 @@ failures; 61 req/s at 80 users with p95 140 ms; p95 flat at 140 to 150 ms across
 │   ├── azure-vm-setup.md
 │   └── azure-vm.env.example
 ├── swarm/
+│   ├── egress/
+│   │   └── squid.conf            (nr-egress: New Relic only)
 │   ├── nginx/
 │   │   ├── default.conf          (template: ${DOMAIN})
 │   │   └── engine-proxy.conf

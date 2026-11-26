@@ -19,7 +19,8 @@ account = int(sys.argv[2]) if len(sys.argv) > 2 else 8743599
 API = f"snippet-service-{env}"
 WORKER = f"snippet-worker-{env}"
 PERMISSIONS = f"snippet-permission-service-{env}"
-APPS = f"'{API}', '{WORKER}', '{PERMISSIONS}'"
+ENGINE = f"snippet-engine-{env}"
+APPS = f"'{API}', '{WORKER}', '{PERMISSIONS}', '{ENGINE}'"
 
 # Who sent the request, from its User-Agent: the load test, Cypress (Electron), the synthetic check (curl)
 # or a person's browser.
