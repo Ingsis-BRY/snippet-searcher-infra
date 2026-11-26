@@ -112,6 +112,9 @@ case "$1" in
 
     engine)
         require_networks "$SNIPPET_NETWORK" "$ENGINE_NETWORK"
+        require_secrets new-relic-license-key
+        NR_EGRESS_CONFIG_VERSION="$(sha256sum "$SCRIPT_DIR/../swarm/egress/squid.conf" | cut -c1-12)"
+        export NR_EGRESS_CONFIG_VERSION
         ENGINE_PROXY_CONFIG_VERSION="$(sha256sum "$SCRIPT_DIR/../swarm/nginx/engine-proxy.conf" | cut -c1-12)"
         export ENGINE_PROXY_CONFIG_VERSION
         resolve_image PRINTSCRIPT_ENGINE_IMAGE "${STACK_NAME}_printscript-engine"
